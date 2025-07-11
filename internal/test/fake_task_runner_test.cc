@@ -30,8 +30,7 @@ TEST(FakeTaskRunner, PostTask) {
   int count = 0;
   FakeTaskRunner task_runner{&clock, 1};
   task_runner.PostTask([&count] { ++count; });
-  ASSERT_TRUE(
-      FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Milliseconds(100)));
+  ASSERT_TRUE(task_runner.SyncWithTimeout(absl::Milliseconds(100)));
   EXPECT_EQ(count, 1);
 }
 
@@ -42,8 +41,7 @@ TEST(FakeTaskRunner, PostDelayedTask) {
   task_runner.PostDelayedTask(absl::Seconds(10), [&count] { ++count; });
   EXPECT_EQ(count, 0);
   clock.FastForward(absl::Seconds(10));
-  ASSERT_TRUE(
-      FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Milliseconds(100)));
+  ASSERT_TRUE(task_runner.SyncWithTimeout(absl::Milliseconds(100)));
   EXPECT_EQ(count, 1);
 }
 
@@ -77,12 +75,10 @@ TEST(FakeTaskRunner, PostDelayedTaskInDelayedTask) {
                                     [&called_count]() { ++called_count; });
       });
   clock.FastForward(absl::Seconds(1));
-  ASSERT_TRUE(
-      FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Milliseconds(100)));
+  ASSERT_TRUE(task_runner.SyncWithTimeout(absl::Milliseconds(100)));
   EXPECT_EQ(called_count, 1);
   clock.FastForward(absl::Seconds(1));
-  ASSERT_TRUE(
-      FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Milliseconds(100)));
+  ASSERT_TRUE(task_runner.SyncWithTimeout(absl::Milliseconds(100)));
   EXPECT_EQ(called_count, 2);
 }
 

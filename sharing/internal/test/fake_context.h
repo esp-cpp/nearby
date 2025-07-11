@@ -17,22 +17,22 @@
 
 #include <stdint.h>
 
-#include <functional>
 #include <memory>
 
-#include "absl/status/status.h"
-#include "absl/strings/string_view.h"
-#include "internal/network/url.h"
 #include "internal/platform/clock.h"
 #include "internal/platform/task_runner.h"
 #include "internal/platform/timer.h"
 #include "internal/test/fake_clock.h"
+#include "internal/test/fake_task_runner.h"
 #include "sharing/internal/api/bluetooth_adapter.h"
 #include "sharing/internal/api/fast_initiation_manager.h"
-#include "sharing/internal/api/shell.h"
 #include "sharing/internal/api/wifi_adapter.h"
 #include "sharing/internal/public/connectivity_manager.h"
 #include "sharing/internal/public/context.h"
+#include "sharing/internal/test/fake_bluetooth_adapter.h"
+#include "sharing/internal/test/fake_connectivity_manager.h"
+#include "sharing/internal/test/fake_fast_initiation_manager.h"
+#include "sharing/internal/test/fake_wifi_adapter.h"
 
 namespace nearby {
 
@@ -43,8 +43,6 @@ class FakeContext : public Context {
 
   Clock* GetClock() const override;
   std::unique_ptr<Timer> CreateTimer() override;
-  void OpenUrl(const nearby::network::Url& url,
-               std::function<void(absl::Status)> callback) override;
   ConnectivityManager* GetConnectivityManager() const override;
   sharing::api::BluetoothAdapter& GetBluetoothAdapter() const override;
   sharing::api::WifiAdapter& GetWifiAdapter() const override;
@@ -52,21 +50,37 @@ class FakeContext : public Context {
   std::unique_ptr<TaskRunner> CreateSequencedTaskRunner() const override;
   std::unique_ptr<TaskRunner> CreateConcurrentTaskRunner(
       uint32_t concurrent_count) const override;
-  api::Shell& GetShell() const override;
-  void CopyText(absl::string_view text,
-                std::function<void(absl::Status)> callback) override;
   TaskRunner* GetTaskRunner() override;
 
   FakeClock* fake_clock() const { return fake_clock_.get(); }
+  FakeConnectivityManager* fake_connectivity_manager() const {
+    return fake_connectivity_manager_.get();
+  }
+  FakeBluetoothAdapter* fake_bluetooth_adapter() const {
+    return fake_bluetooth_adapter_.get();
+  }
+  FakeWifiAdapter* fake_wifi_adapter() const {
+    return fake_wifi_adapter_.get();
+  }
+  FakeFastInitiationManager* fake_fast_initiation_manager() const {
+    return fake_fast_initiation_manager_.get();
+  }
+  FakeTaskRunner* fake_task_runner() const {
+    return executor_.get();
+  }
+
+  FakeTaskRunner* last_sequenced_task_runner() const {
+    return last_sequenced_task_runner_;
+  }
 
  private:
   std::unique_ptr<FakeClock> fake_clock_;
-  std::unique_ptr<ConnectivityManager> connectivity_manager_;
-  std::unique_ptr<sharing::api::BluetoothAdapter> bluetooth_adapter_;
-  std::unique_ptr<sharing::api::WifiAdapter> wifi_adapter_;
-  std::unique_ptr<api::FastInitiationManager> fast_initiation_manager_;
-  std::unique_ptr<api::Shell> shell_;
-  std::unique_ptr<TaskRunner> executor_;
+  std::unique_ptr<FakeConnectivityManager> fake_connectivity_manager_;
+  std::unique_ptr<FakeBluetoothAdapter> fake_bluetooth_adapter_;
+  std::unique_ptr<FakeWifiAdapter> fake_wifi_adapter_;
+  std::unique_ptr<FakeFastInitiationManager> fake_fast_initiation_manager_;
+  std::unique_ptr<FakeTaskRunner> executor_;
+  mutable FakeTaskRunner* last_sequenced_task_runner_ = nullptr;
 };
 
 }  // namespace nearby

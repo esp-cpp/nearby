@@ -20,29 +20,24 @@
 #include "gtest/gtest.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
+#include "internal/test/fake_clock.h"
 #include "internal/test/fake_device_info.h"
 #include "internal/test/fake_task_runner.h"
-#include "sharing/fake_nearby_connections_manager.h"
 #include "sharing/incoming_frames_reader.h"
-#include "sharing/internal/test/fake_context.h"
-#include "sharing/nearby_sharing_decoder_impl.h"
 #include "sharing/proto/wire_format.pb.h"
 
-namespace nearby {
-namespace sharing {
+namespace nearby::sharing {
 namespace {
 
 TEST(NearbyConnectionImpl, DestructorBeforeReaderDestructor) {
-  FakeNearbyConnectionsManager connection_manager;
-  FakeContext context;
+  FakeClock fake_clock;
+  FakeTaskRunner fake_task_runner(&fake_clock, 1);
   FakeDeviceInfo device_info;
-  NearbySharingDecoderImpl decoder;
   bool called = false;
 
-  auto connection = std::make_unique<NearbyConnectionImpl>(
-      device_info, &connection_manager, "test");
-  auto frames_reader = std::make_shared<IncomingFramesReader>(
-      &context, &decoder, connection.get());
+  auto connection = std::make_unique<NearbyConnectionImpl>(device_info);
+  auto frames_reader = std::make_shared<IncomingFramesReader>(fake_task_runner,
+                                                              connection.get());
 
   absl::Notification notification;
   frames_reader->ReadFrame(
@@ -50,23 +45,21 @@ TEST(NearbyConnectionImpl, DestructorBeforeReaderDestructor) {
         called = true;
         notification.Notify();
       });
-  EXPECT_TRUE(FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Seconds(1)));
+  EXPECT_TRUE(fake_task_runner.SyncWithTimeout(absl::Seconds(1)));
   connection.reset();
   EXPECT_TRUE(notification.WaitForNotificationWithTimeout(absl::Seconds(1)));
   EXPECT_TRUE(called);
 }
 
 TEST(NearbyConnectionImpl, DestructorAfterReaderDestructor) {
-  FakeNearbyConnectionsManager connection_manager;
-  FakeContext context;
+  FakeClock fake_clock;
+  FakeTaskRunner fake_task_runner(&fake_clock, 1);
   FakeDeviceInfo device_info;
-  NearbySharingDecoderImpl decoder;
   std::optional<nearby::sharing::service::proto::V1Frame> frame_result;
 
-  auto connection = std::make_unique<NearbyConnectionImpl>(
-      device_info, &connection_manager, "test");
-  auto frames_reader = std::make_shared<IncomingFramesReader>(
-      &context, &decoder, connection.get());
+  auto connection = std::make_unique<NearbyConnectionImpl>(device_info);
+  auto frames_reader = std::make_shared<IncomingFramesReader>(fake_task_runner,
+                                                              connection.get());
 
   absl::Notification notification;
   frames_reader->ReadFrame(
@@ -75,7 +68,7 @@ TEST(NearbyConnectionImpl, DestructorAfterReaderDestructor) {
         notification.Notify();
       });
 
-  EXPECT_TRUE(FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Seconds(1)));
+  EXPECT_TRUE(fake_task_runner.SyncWithTimeout(absl::Seconds(1)));
   frames_reader.reset();
   connection.reset();
   EXPECT_TRUE(notification.WaitForNotificationWithTimeout(absl::Seconds(1)));
@@ -83,5 +76,4 @@ TEST(NearbyConnectionImpl, DestructorAfterReaderDestructor) {
 }
 
 }  // namespace
-}  // namespace sharing
-}  // namespace nearby
+}  // namespace nearby::sharing

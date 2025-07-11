@@ -16,7 +16,6 @@
 
 #include <functional>
 #include <memory>
-#include <ostream>
 #include <string>
 #include <vector>
 
@@ -26,6 +25,7 @@
 #include "sharing/internal/public/context.h"
 #include "sharing/internal/public/logging.h"
 #include "sharing/nearby_connections_types.h"
+#include "sharing/thread_timer.h"
 
 namespace nearby {
 namespace sharing {
@@ -47,11 +47,17 @@ TransferManager::TransferManager(Context* context,
                                  absl::string_view endpoint_id)
     : context_(context), endpoint_id_(endpoint_id) {}
 
+TransferManager::~TransferManager() {
+  absl::MutexLock lock(&mutex_);
+  timeout_timer_.reset();
+  pending_tasks_.clear();
+}
+
 void TransferManager::Send(std::function<void()> task) {
   absl::MutexLock lock(&mutex_);
 
   if (is_waiting_for_high_quality_medium_) {
-    NL_LOG(INFO)
+    LOG(INFO)
         << "Connection to endpoint " << endpoint_id_
         << " is waiting for a high quality medium, delaying payload transfer.";
     pending_tasks_.push_back(task);
@@ -65,19 +71,19 @@ void TransferManager::OnMediumQualityChanged(Medium current_medium) {
   absl::MutexLock lock(&mutex_);
 
   if (!is_waiting_for_high_quality_medium_) {
-    NL_LOG(WARNING) << "It is not waiting for high quality medium.";
+    LOG(WARNING) << "It is not waiting for high quality medium.";
     return;
   }
 
   if (!IsHighQualityMedium(current_medium)) {
-    NL_LOG(WARNING) << "medium switched to low quality Medium: "
-                    << static_cast<int>(current_medium);
+    LOG(WARNING) << "medium switched to low quality Medium: "
+                 << static_cast<int>(current_medium);
     return;
   }
 
-  NL_LOG(INFO) << "Connection to endpoint " << endpoint_id_
-               << " has changed to a high quality medium: "
-               << static_cast<int>(current_medium);
+  LOG(INFO) << "Connection to endpoint " << endpoint_id_
+            << " has changed to a high quality medium: "
+            << static_cast<int>(current_medium);
   StopWaitingForHighQualityMedium();
 }
 
@@ -85,44 +91,43 @@ bool TransferManager::StartTransfer() {
   absl::MutexLock lock(&mutex_);
 
   if (!is_waiting_for_high_quality_medium_) {
-    NL_LOG(WARNING) << "No need to wait for high quality medium.";
+    LOG(WARNING) << "No need to wait for high quality medium.";
     return false;
   }
 
-  if (timeout_timer_ != nullptr && timeout_timer_->IsRunning()) {
-    NL_LOG(WARNING) << "transfer already started.";
+  if (timeout_timer_ != nullptr) {
+    LOG(WARNING) << "transfer already started.";
     return false;
   }
 
-  timeout_timer_ = context_->CreateTimer();
-  timeout_timer_->Start(
-      kMediumUpgradeTimeout / absl::Milliseconds(1), 0, [&]() {
+  timeout_timer_ = std::make_unique<ThreadTimer>(
+      *context_->GetTaskRunner(), "transfer_manager_timeout_timer",
+      kMediumUpgradeTimeout, [this]() {
         absl::MutexLock lock(&mutex_);
 
-        NL_LOG(INFO) << "Timed out for endpoint " << endpoint_id_ << " after "
-                     << (kMediumUpgradeTimeout / absl::Milliseconds(1))
-                     << "ms.";
+        LOG(INFO) << "Timed out for endpoint " << endpoint_id_ << " after "
+                  << kMediumUpgradeTimeout;
         StopWaitingForHighQualityMedium();
       });
 
-  NL_LOG(INFO) << "Attempting to upgrade the bandwidth for endpoint " +
-                      endpoint_id_ + ". Large payloads will be delayed" +
-                      " until either bandwidth is upgraded or a timeout of "
-               << (kMediumUpgradeTimeout / absl::Milliseconds(1))
-               << " milliseconds is reached";
+  LOG(INFO) << "Attempting to upgrade the bandwidth for endpoint " +
+                   endpoint_id_ + ". Large payloads will be delayed" +
+                   " until either bandwidth is upgraded or a timeout of "
+            << (kMediumUpgradeTimeout / absl::Milliseconds(1))
+            << " milliseconds is reached";
   return true;
 }
 
 bool TransferManager::CancelTransfer() {
   absl::MutexLock lock(&mutex_);
 
-  if (timeout_timer_ == nullptr || !timeout_timer_->IsRunning()) {
-    NL_LOG(WARNING) << "No running transfer.";
+  if (timeout_timer_ == nullptr) {
+    LOG(WARNING) << "No running transfer.";
     return false;
   }
 
-  timeout_timer_->Stop();
-  NL_LOG(INFO) << __func__ << "Transfer is canceled";
+  timeout_timer_.reset();
+  LOG(INFO) << __func__ << "Transfer is canceled";
   return true;
 }
 
@@ -130,14 +135,12 @@ void TransferManager::StopWaitingForHighQualityMedium() {
   is_waiting_for_high_quality_medium_ = false;
 
   for (const auto& task : pending_tasks_) {
-    NL_LOG(INFO) << "Sending delayed payload to endpoint " << endpoint_id_;
+    LOG(INFO) << "Sending delayed payload to endpoint " << endpoint_id_;
     task();
   }
-  pending_tasks_.clear();
 
-  if (timeout_timer_ != nullptr) {
-    timeout_timer_->Stop();
-  }
+  pending_tasks_.clear();
+  timeout_timer_.reset();
 }
 
 }  // namespace sharing

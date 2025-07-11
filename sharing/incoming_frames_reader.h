@@ -18,19 +18,19 @@
 #include <stdint.h>
 
 #include <functional>
-#include <map>
+#include <list>
 #include <memory>
 #include <optional>
 #include <queue>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/time/time.h"
-#include "internal/platform/mutex.h"
-#include "internal/platform/timer.h"
-#include "sharing/internal/public/context.h"
+#include "absl/synchronization/mutex.h"
+#include "internal/platform/task_runner.h"
 #include "sharing/nearby_connection.h"
-#include "sharing/nearby_sharing_decoder.h"
 #include "sharing/proto/wire_format.pb.h"
+#include "sharing/thread_timer.h"
 
 namespace nearby {
 namespace sharing {
@@ -39,7 +39,7 @@ namespace sharing {
 class IncomingFramesReader
     : public std::enable_shared_from_this<IncomingFramesReader> {
  public:
-  IncomingFramesReader(Context* context, NearbySharingDecoder* decoder,
+  IncomingFramesReader(TaskRunner& service_thread,
                        NearbyConnection* connection);
   virtual ~IncomingFramesReader();
   IncomingFramesReader(const IncomingFramesReader&) = delete;
@@ -54,7 +54,7 @@ class IncomingFramesReader
   virtual void ReadFrame(
       std::function<
           void(std::optional<nearby::sharing::service::proto::V1Frame>)>
-          callback);
+          callback) ABSL_LOCKS_EXCLUDED(mutex_);
 
   // Reads a frame of type |frame_type| from |connection|. |callback| is called
   // with the frame read from connection or nullopt if connection socket is
@@ -63,11 +63,11 @@ class IncomingFramesReader
   // Note: Callers are expected wait for |callback| to be run before scheduling
   // subsequent calls to ReadFrame(..).
   virtual void ReadFrame(
-      nearby::sharing::service::proto::V1Frame_FrameType frame_type,
+      nearby::sharing::service::proto::V1Frame::FrameType frame_type,
       std::function<
           void(std::optional<nearby::sharing::service::proto::V1Frame>)>
           callback,
-      absl::Duration timeout);
+      absl::Duration timeout) ABSL_LOCKS_EXCLUDED(mutex_);
 
   std::weak_ptr<IncomingFramesReader> GetWeakPtr() {
     return this->weak_from_this();
@@ -75,36 +75,42 @@ class IncomingFramesReader
 
  private:
   struct ReadFrameInfo {
-    std::optional<nearby::sharing::service::proto::V1Frame_FrameType>
+    std::optional<nearby::sharing::service::proto::V1Frame::FrameType>
         frame_type = std::nullopt;
     std::function<void(std::optional<nearby::sharing::service::proto::V1Frame>)>
         callback = nullptr;
-    std::optional<absl::Duration> timeout = std::nullopt;
+    absl::Duration timeout = absl::ZeroDuration();
   };
 
-  void ReadNextFrame();
-  void OnDataReadFromConnection(std::optional<std::vector<uint8_t>> bytes);
-  void OnFrameDecoded(
-      std::optional<nearby::sharing::service::proto::Frame> frame);
+  void ProcessReadRequest(
+      std::optional<nearby::sharing::service::proto::V1Frame::FrameType>
+          frame_type,
+      std::function<
+          void(std::optional<nearby::sharing::service::proto::V1Frame>)>
+          callback,
+      absl::Duration timeout) ABSL_LOCKS_EXCLUDED(mutex_);
+  void CloseAllPendingReads() ABSL_LOCKS_EXCLUDED(mutex_);
+  void ReadNextFrame() ABSL_LOCKS_EXCLUDED(mutex_);
+  void OnDataReadFromConnection(const std::vector<uint8_t>& bytes)
+      ABSL_LOCKS_EXCLUDED(mutex_);
   void OnTimeout();
-  void Done(std::optional<nearby::sharing::service::proto::V1Frame> frame);
-  std::optional<nearby::sharing::service::proto::V1Frame> GetCachedFrame(
-      std::optional<nearby::sharing::service::proto::V1Frame_FrameType>
-          frame_type);
+  void Done(std::unique_ptr<nearby::sharing::service::proto::V1Frame> frame)
+      ABSL_LOCKS_EXCLUDED(mutex_);
+  std::unique_ptr<nearby::sharing::service::proto::V1Frame> PopCachedFrame(
+      std::optional<nearby::sharing::service::proto::V1Frame::FrameType>
+          frame_type) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  NearbyConnection* connection_;
-  NearbySharingDecoder* decoder_ = nullptr;
+  TaskRunner& service_thread_;
+  NearbyConnection* const connection_;
 
-  RecursiveMutex mutex_;
-  std::queue<ReadFrameInfo> read_frame_info_queue_;
-  std::function<void()> timeout_callback_;
+  absl::Mutex mutex_;
+  std::queue<ReadFrameInfo> read_frame_info_queue_ ABSL_GUARDED_BY(mutex_);
 
   // Caches frames read from NearbyConnection which are not used immediately.
-  std::map<nearby::sharing::service::proto::V1Frame_FrameType,
-           std::optional<nearby::sharing::service::proto::V1Frame>>
-      cached_frames_;
+  std::list<std::unique_ptr<nearby::sharing::service::proto::V1Frame>>
+      cached_frames_ ABSL_GUARDED_BY(mutex_);
 
-  std::unique_ptr<Timer> timeout_timer_ = nullptr;
+  std::unique_ptr<ThreadTimer> timeout_timer_ ABSL_GUARDED_BY(mutex_);
 };
 
 }  // namespace sharing

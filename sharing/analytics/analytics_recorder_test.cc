@@ -16,21 +16,20 @@
 
 #include <stdint.h>
 
-#include <memory>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include "google/protobuf/duration.pb.h"
 #include "gmock/gmock.h"
 #include "protobuf-matchers/protocol-buffer-matchers.h"
 #include "gtest/gtest.h"
 #include "absl/strings/string_view.h"
-#include "internal/analytics/event_logger.h"
+#include "absl/time/time.h"
+#include "internal/analytics/mock_event_logger.h"
 #include "proto/sharing_enums.pb.h"
 #include "sharing/analytics/analytics_device_settings.h"
 #include "sharing/analytics/analytics_information.h"
-#include "sharing/attachment.h"
+#include "sharing/attachment_container.h"
 #include "sharing/common/nearby_share_enums.h"
 #include "sharing/file_attachment.h"
 #include "sharing/proto/analytics/nearby_sharing_log.pb.h"
@@ -38,7 +37,6 @@
 #include "sharing/proto/wire_format.pb.h"
 #include "sharing/share_target.h"
 #include "sharing/text_attachment.h"
-#include "google/protobuf/message_lite.h"
 
 namespace nearby {
 namespace sharing {
@@ -48,9 +46,11 @@ namespace {
 using ::location::nearby::proto::sharing::EventCategory;
 using ::location::nearby::proto::sharing::EventType;
 using ::location::nearby::proto::sharing::OSType;
+using ::nearby::analytics::MockEventLogger;
 using ::nearby::sharing::analytics::proto::SharingLog;
 using ::nearby::sharing::proto::DataUsage;
 using ::nearby::sharing::proto::DeviceVisibility;
+using ::testing::An;
 
 constexpr absl::string_view kFileName = "fileName";
 constexpr absl::string_view kTextBody = "textBody";
@@ -59,26 +59,18 @@ constexpr absl::string_view kFileMimeType = "application/pdf";
 constexpr absl::string_view kTextMimeType = "text/plain";
 constexpr absl::string_view kAppPackageName = "com.google.android.youtube";
 
-class MockEventLogger : public ::nearby::analytics::EventLogger {
- public:
-  MockEventLogger() = default;
-  ~MockEventLogger() override = default;
-
-  MOCK_METHOD(void, Log, (const ::google::protobuf::MessageLite& message), (override));
-};
-
 class AnalyticsRecorderTest : public ::testing::Test {
  public:
   AnalyticsRecorderTest() = default;
   ~AnalyticsRecorderTest() override = default;
 
-  const MockEventLogger& event_logger() { return event_logger_; }
+  MockEventLogger& event_logger() { return event_logger_; }
 
   AnalyticsRecorder analytics_recoder() { return analytics_recorder_; }
 
  private:
   MockEventLogger event_logger_;
-  AnalyticsRecorder analytics_recorder_{&event_logger_};
+  AnalyticsRecorder analytics_recorder_{/*vendor_id=*/0, &event_logger_};
 };
 
 TEST_F(AnalyticsRecorderTest, NewEstablishConnection) {
@@ -86,112 +78,96 @@ TEST_F(AnalyticsRecorderTest, NewEstablishConnection) {
   share_target.device_name = "share_target";
   share_target.type = ShareTargetType::kPhone;
 
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ESTABLISH_CONNECTION);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->establish_connection().status(),
-                  ::location::nearby::proto::sharing::
-                      EstablishConnectionStatus::CONNECTION_STATUS_SUCCESS);
-        EXPECT_EQ(log->establish_connection().session_id(), 1);
-        EXPECT_EQ(log->establish_connection().transfer_position(), 1);
-        EXPECT_EQ(log->establish_connection().concurrent_connections(), 1);
-        EXPECT_EQ(log->establish_connection().duration_millis(), 100);
-        EXPECT_EQ(log->establish_connection().share_target_info().os_type(),
-                  ::location::nearby::proto::sharing::OSType::ANDROID);
-        EXPECT_EQ(log->establish_connection().referrer_name(), kAppPackageName);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ESTABLISH_CONNECTION);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.establish_connection().status(),
+                  location::nearby::proto::sharing::EstablishConnectionStatus::
+                      CONNECTION_STATUS_SUCCESS);
+        EXPECT_EQ(log.establish_connection().session_id(), 1);
+        EXPECT_EQ(log.establish_connection().transfer_position(), 1);
+        EXPECT_EQ(log.establish_connection().concurrent_connections(), 1);
+        EXPECT_EQ(log.establish_connection().duration_millis(), 100);
+        EXPECT_EQ(log.establish_connection().share_target_info().os_type(),
+                  location::nearby::proto::sharing::OSType::ANDROID);
+        EXPECT_EQ(log.establish_connection().referrer_name(), kAppPackageName);
       });
 
   analytics_recoder().NewEstablishConnection(
       1,
-      ::location::nearby::proto::sharing::EstablishConnectionStatus::
+      location::nearby::proto::sharing::EstablishConnectionStatus::
           CONNECTION_STATUS_SUCCESS,
       share_target, 1, 1, 100, std::string(kAppPackageName));
 }
 
 TEST_F(AnalyticsRecorderTest, NewAcceptAgreements) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ACCEPT_AGREEMENTS);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ACCEPT_AGREEMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewAcceptAgreements();
 }
 
 TEST_F(AnalyticsRecorderTest, NewDeclineAgreements) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DECLINE_AGREEMENTS);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DECLINE_AGREEMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewDeclineAgreements();
 }
 
 TEST_F(AnalyticsRecorderTest, NewAddContact) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ADD_CONTACT);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ADD_CONTACT);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewAddContact();
 }
 
 TEST_F(AnalyticsRecorderTest, NewRemoveContact) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::REMOVE_CONTACT);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::REMOVE_CONTACT);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewRemoveContact();
 }
 
 TEST_F(AnalyticsRecorderTest, NewTapFeedback) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::TAP_FEEDBACK);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::TAP_FEEDBACK);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewTapFeedback();
 }
 
 TEST_F(AnalyticsRecorderTest, NewTapHelp) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::TAP_HELP);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::TAP_HELP);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewTapHelp();
 }
 
 TEST_F(AnalyticsRecorderTest, NewLaunchDeviceContactConsent) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::LAUNCH_CONSENT);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->launch_consent().status(),
-                  ::location::nearby::proto::sharing::ConsentAcceptanceStatus::
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::LAUNCH_CONSENT);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.launch_consent().status(),
+                  location::nearby::proto::sharing::ConsentAcceptanceStatus::
                       CONSENT_ACCEPTED);
       });
 
@@ -201,197 +177,176 @@ TEST_F(AnalyticsRecorderTest, NewLaunchDeviceContactConsent) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewAdvertiseDevicePresenceEnd) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ADVERTISE_DEVICE_PRESENCE_END);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->advertise_device_presence_end().session_id(), 100);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ADVERTISE_DEVICE_PRESENCE_END);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.advertise_device_presence_end().session_id(), 100);
       });
 
   analytics_recoder().NewAdvertiseDevicePresenceEnd(100);
 }
 
 TEST_F(AnalyticsRecorderTest, NewAdvertiseDevicePresenceStart) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(),
-                  EventType::ADVERTISE_DEVICE_PRESENCE_START);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(
-            log->advertise_device_presence_start().visibility(),
-            ::location::nearby::proto::sharing::Visibility::CONTACTS_ONLY);
-        EXPECT_EQ(log->advertise_device_presence_start().status(),
-                  ::location::nearby::proto::sharing::SessionStatus::
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ADVERTISE_DEVICE_PRESENCE_START);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.advertise_device_presence_start().visibility(),
+                  location::nearby::proto::sharing::Visibility::CONTACTS_ONLY);
+        EXPECT_EQ(log.advertise_device_presence_start().status(),
+                  location::nearby::proto::sharing::SessionStatus::
                       SUCCEEDED_SESSION_STATUS);
-        EXPECT_EQ(log->advertise_device_presence_start().data_usage(),
-                  ::location::nearby::proto::sharing::DataUsage::OFFLINE);
-        EXPECT_EQ(log->advertise_device_presence_start().referrer_name(),
+        EXPECT_EQ(log.advertise_device_presence_start().data_usage(),
+                  location::nearby::proto::sharing::DataUsage::OFFLINE);
+        EXPECT_EQ(log.advertise_device_presence_start().referrer_name(),
                   kAppPackageName);
-        EXPECT_EQ(log->advertise_device_presence_start().session_id(), 100);
+        EXPECT_EQ(log.advertise_device_presence_start().session_id(), 100);
       });
 
   analytics_recoder().NewAdvertiseDevicePresenceStart(
       100, DeviceVisibility::DEVICE_VISIBILITY_ALL_CONTACTS,
-      ::location::nearby::proto::sharing::SessionStatus::
-          SUCCEEDED_SESSION_STATUS,
+      location::nearby::proto::sharing::SessionStatus::SUCCEEDED_SESSION_STATUS,
       DataUsage::OFFLINE_DATA_USAGE, std::string(kAppPackageName));
 }
 
 TEST_F(AnalyticsRecorderTest, NewDescribeAttachments) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DESCRIBE_ATTACHMENTS);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->describe_attachments()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DESCRIBE_ATTACHMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment_size(),
                   5);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(0)
                       .size_bytes(),
                   kTextBody.size());
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(0)
                       .type(),
                   SharingLog::TextAttachment::UNKNOWN_TEXT_TYPE);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(1)
                       .type(),
                   SharingLog::TextAttachment::PHONE_NUMBER);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(2)
                       .type(),
                   SharingLog::TextAttachment::URL);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(3)
                       .type(),
                   SharingLog::TextAttachment::ADDRESS);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment(4)
                       .type(),
                   SharingLog::TextAttachment::UNKNOWN_TEXT_TYPE);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment_size(),
                   4);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment(0)
                       .size_bytes(),
                   2);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment(0)
                       .type(),
                   SharingLog::FileAttachment::IMAGE);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment(1)
                       .type(),
                   SharingLog::FileAttachment::DOCUMENT);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment(2)
                       .type(),
                   SharingLog::FileAttachment::AUDIO);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment(3)
                       .type(),
                   SharingLog::FileAttachment::DOCUMENT);
       });
 
-  std::vector<std::unique_ptr<Attachment>> attachments;
-  attachments.push_back(std::make_unique<FileAttachment>(
-      1, 2, std::string(kFileName), "", service::proto::FileMetadata::IMAGE));
-  attachments.push_back(std::make_unique<FileAttachment>(
-      2, 3, std::string(kFileDocumentName), std::string(kFileMimeType),
-      service::proto::FileMetadata::DOCUMENT));
-  attachments.push_back(std::make_unique<FileAttachment>(
-      3, 4, std::string(kFileName), "", service::proto::FileMetadata::AUDIO));
-  attachments.push_back(std::make_unique<FileAttachment>(
-      4, 5, std::string(kFileName), std::string(kTextMimeType),
-      service::proto::FileMetadata::DOCUMENT));
-  attachments.push_back(std::make_unique<TextAttachment>(
-      5, service::proto::TextMetadata::TEXT, std::string(kTextBody),
-      kTextBody.size()));
-  attachments.push_back(std::make_unique<TextAttachment>(
-      6, service::proto::TextMetadata::PHONE_NUMBER, std::string(kTextBody),
-      kTextBody.size()));
-  attachments.push_back(std::make_unique<TextAttachment>(
-      7, service::proto::TextMetadata::URL, std::string(kTextBody),
-      kTextBody.size()));
-  attachments.push_back(std::make_unique<TextAttachment>(
-      8, service::proto::TextMetadata::ADDRESS, std::string(kTextBody),
-      kTextBody.size()));
-  attachments.push_back(std::make_unique<TextAttachment>(
-      9, service::proto::TextMetadata::UNKNOWN, std::string(kTextBody),
-      kTextBody.size()));
+  AttachmentContainer attachments(
+      {TextAttachment(5, service::proto::TextMetadata::TEXT,
+                      std::string(kTextBody), kTextBody.size()),
+       TextAttachment(6, service::proto::TextMetadata::PHONE_NUMBER,
+                      std::string(kTextBody), kTextBody.size()),
+       TextAttachment(7, service::proto::TextMetadata::URL,
+                      std::string(kTextBody), kTextBody.size()),
+       TextAttachment(8, service::proto::TextMetadata::ADDRESS,
+                      std::string(kTextBody), kTextBody.size()),
+       TextAttachment(9, service::proto::TextMetadata::UNKNOWN,
+                      std::string(kTextBody), kTextBody.size())},
+      {FileAttachment(1, 2, std::string(kFileName), "",
+                      service::proto::FileMetadata::IMAGE),
+       FileAttachment(2, 3, std::string(kFileDocumentName),
+                      std::string(kFileMimeType),
+                      service::proto::FileMetadata::DOCUMENT),
+       FileAttachment(3, 4, std::string(kFileName), "",
+                      service::proto::FileMetadata::AUDIO),
+       FileAttachment(4, 5, std::string(kFileName), std::string(kTextMimeType),
+                      service::proto::FileMetadata::DOCUMENT)},
+      {});
 
   analytics_recoder().NewDescribeAttachments(attachments);
 }
 
 TEST_F(AnalyticsRecorderTest, EmptyDescribeAttachments) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DESCRIBE_ATTACHMENTS);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->describe_attachments()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DESCRIBE_ATTACHMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .text_attachment_size(),
                   0);
-        EXPECT_EQ(log->describe_attachments()
+        EXPECT_EQ(log.describe_attachments()
                       .attachments_info()
                       .file_attachment_size(),
                   0);
       });
 
-  std::vector<std::unique_ptr<Attachment>> attachments;
-  analytics_recoder().NewDescribeAttachments(attachments);
+  analytics_recoder().NewDescribeAttachments(AttachmentContainer());
 }
 
 TEST_F(AnalyticsRecorderTest, NewDiscoverShareTarget) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DISCOVER_SHARE_TARGET);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DISCOVER_SHARE_TARGET);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.discover_share_target().duration_since_scanning().nanos(),
+                  (2100 % 1000) * 1000000);
         EXPECT_EQ(
-            log->discover_share_target().duration_since_scanning().nanos(),
-            (2100 % 1000) * 1000000);
-        EXPECT_EQ(
-            log->discover_share_target().duration_since_scanning().seconds(),
+            log.discover_share_target().duration_since_scanning().seconds(),
             2100 / 1000);
         EXPECT_EQ(
-            log->discover_share_target()
+            log.discover_share_target()
                 .share_target_info()
                 .device_relationship(),
             ::location::nearby::proto::sharing::DeviceRelationship::IS_CONTACT);
-        EXPECT_EQ(
-            log->discover_share_target().share_target_info().device_type(),
-            ::location::nearby::proto::sharing::DeviceType::LAPTOP);
-        EXPECT_EQ(log->discover_share_target().share_target_info().os_type(),
+        EXPECT_EQ(log.discover_share_target().share_target_info().device_type(),
+                  ::location::nearby::proto::sharing::DeviceType::LAPTOP);
+        EXPECT_EQ(log.discover_share_target().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::UNKNOWN_OS_TYPE);
-        EXPECT_EQ(log->discover_share_target().session_id(), 1);
-        EXPECT_EQ(log->discover_share_target().flow_id(), 100);
-        EXPECT_FALSE(log->discover_share_target().has_referrer_name());
+        EXPECT_EQ(log.discover_share_target().session_id(), 1);
+        EXPECT_EQ(log.discover_share_target().flow_id(), 100);
+        EXPECT_FALSE(log.discover_share_target().has_referrer_name());
         EXPECT_EQ(
-            log->discover_share_target().latency_since_activity_start_millis(),
+            log.discover_share_target().latency_since_activity_start_millis(),
             2);
       });
 
@@ -406,14 +361,12 @@ TEST_F(AnalyticsRecorderTest, NewDiscoverShareTarget) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewEnableNearbySharing) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ENABLE_NEARBY_SHARING);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->enable_nearby_sharing().status(),
-                  ::location::nearby::proto::sharing::NearbySharingStatus::ON);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ENABLE_NEARBY_SHARING);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.enable_nearby_sharing().status(),
+                  location::nearby::proto::sharing::NearbySharingStatus::ON);
       });
 
   analytics_recoder().NewEnableNearbySharing(
@@ -421,61 +374,54 @@ TEST_F(AnalyticsRecorderTest, NewEnableNearbySharing) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewOpenReceivedAttachments) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::OPEN_RECEIVED_ATTACHMENTS);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->open_received_attachments()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::OPEN_RECEIVED_ATTACHMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.open_received_attachments()
                       .attachments_info()
                       .text_attachment_size(),
                   0);
-        EXPECT_EQ(log->open_received_attachments()
+        EXPECT_EQ(log.open_received_attachments()
                       .attachments_info()
                       .file_attachment_size(),
                   0);
-        EXPECT_EQ(log->open_received_attachments().session_id(), 1);
+        EXPECT_EQ(log.open_received_attachments().session_id(), 1);
       });
 
-  analytics_recoder().NewOpenReceivedAttachments(
-      std::vector<std::unique_ptr<Attachment>>(), 1);
+  analytics_recoder().NewOpenReceivedAttachments(AttachmentContainer(), 1);
 }
 
 TEST_F(AnalyticsRecorderTest, NewProcessReceivedAttachmentsEnd) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(),
                   EventType::PROCESS_RECEIVED_ATTACHMENTS_END);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->process_received_attachments_end().session_id(), 1);
-        EXPECT_EQ(log->process_received_attachments_end().status(),
-                  ::location::nearby::proto::sharing::
-                      ProcessReceivedAttachmentsStatus::
-                          PROCESSING_STATUS_COMPLETE_PROCESSING_ATTACHMENTS);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.process_received_attachments_end().session_id(), 1);
+        EXPECT_EQ(
+            log.process_received_attachments_end().status(),
+            location::nearby::proto::sharing::ProcessReceivedAttachmentsStatus::
+                PROCESSING_STATUS_COMPLETE_PROCESSING_ATTACHMENTS);
       });
 
   analytics_recoder().NewProcessReceivedAttachmentsEnd(
-      1, ::location::nearby::proto::sharing::ProcessReceivedAttachmentsStatus::
+      1, location::nearby::proto::sharing::ProcessReceivedAttachmentsStatus::
              PROCESSING_STATUS_COMPLETE_PROCESSING_ATTACHMENTS);
 }
 
 TEST_F(AnalyticsRecorderTest, NewReceiveAttachmentsEnd) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::RECEIVE_ATTACHMENTS_END);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->receive_attachments_end().session_id(), 1);
-        EXPECT_EQ(log->receive_attachments_end().received_bytes(), 2);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RECEIVE_ATTACHMENTS_END);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.receive_attachments_end().session_id(), 1);
+        EXPECT_EQ(log.receive_attachments_end().received_bytes(), 2);
         EXPECT_EQ(
-            log->receive_attachments_end().status(),
+            log.receive_attachments_end().status(),
             ::location::nearby::proto::sharing::AttachmentTransmissionStatus::
                 COMPLETE_ATTACHMENT_TRANSMISSION_STATUS);
-        EXPECT_EQ(log->receive_attachments_end().referrer_name(),
+        EXPECT_EQ(log.receive_attachments_end().referrer_name(),
                   kAppPackageName);
       });
 
@@ -487,31 +433,26 @@ TEST_F(AnalyticsRecorderTest, NewReceiveAttachmentsEnd) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewReceiveAttachmentsStart) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::RECEIVE_ATTACHMENTS_START);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->receive_attachments_start().session_id(), 1);
-        EXPECT_EQ(log->receive_attachments_start()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RECEIVE_ATTACHMENTS_START);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.receive_attachments_start().session_id(), 1);
+        EXPECT_EQ(log.receive_attachments_start()
                       .attachments_info()
                       .file_attachment_size(),
                   0);
       });
 
-  analytics_recoder().NewReceiveAttachmentsStart(
-      1, std::vector<std::unique_ptr<Attachment>>());
+  analytics_recoder().NewReceiveAttachmentsStart(1, AttachmentContainer());
 }
 
 TEST_F(AnalyticsRecorderTest, NewReceiveFastInitialization) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::RECEIVE_FAST_INITIALIZATION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->receive_initialization()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RECEIVE_FAST_INITIALIZATION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.receive_initialization()
                       .time_elapse_since_screen_unlock_millis(),
                   1);
       });
@@ -520,42 +461,36 @@ TEST_F(AnalyticsRecorderTest, NewReceiveFastInitialization) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewAcceptFastInitialization) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ACCEPT_FAST_INITIALIZATION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ACCEPT_FAST_INITIALIZATION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
       });
 
   analytics_recoder().NewAcceptFastInitialization();
 }
 
 TEST_F(AnalyticsRecorderTest, NewDismissFastInitialization) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DISMISS_FAST_INITIALIZATION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DISMISS_FAST_INITIALIZATION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
       });
 
   analytics_recoder().NewDismissFastInitialization();
 }
 
 TEST_F(AnalyticsRecorderTest, NewReceiveIntroduction) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::RECEIVE_INTRODUCTION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->receive_introduction().session_id(), 1);
-        EXPECT_EQ(log->receive_introduction().share_target_info().os_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RECEIVE_INTRODUCTION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.receive_introduction().session_id(), 1);
+        EXPECT_EQ(log.receive_introduction().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::WINDOWS);
-        EXPECT_EQ(log->receive_introduction().share_target_info().device_type(),
+        EXPECT_EQ(log.receive_introduction().share_target_info().device_type(),
                   ::location::nearby::proto::sharing::DeviceType::PHONE);
-        EXPECT_EQ(log->receive_introduction().referrer_name(), kAppPackageName);
+        EXPECT_EQ(log.receive_introduction().referrer_name(), kAppPackageName);
       });
 
   ShareTarget share_target;
@@ -566,14 +501,12 @@ TEST_F(AnalyticsRecorderTest, NewReceiveIntroduction) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewRespondToIntroduction) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::RESPOND_TO_INTRODUCTION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->respond_introduction().session_id(), 1);
-        EXPECT_EQ(log->respond_introduction().action(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RESPOND_TO_INTRODUCTION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.respond_introduction().session_id(), 1);
+        EXPECT_EQ(log.respond_introduction().action(),
                   ::location::nearby::proto::sharing::ResponseToIntroduction::
                       ACCEPT_INTRODUCTION);
       });
@@ -585,58 +518,50 @@ TEST_F(AnalyticsRecorderTest, NewRespondToIntroduction) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewTapPrivacyNotification) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::TAP_PRIVACY_NOTIFICATION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::TAP_PRIVACY_NOTIFICATION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
       });
 
   analytics_recoder().NewTapPrivacyNotification();
 }
 
 TEST_F(AnalyticsRecorderTest, NewDismissPrivacyNotification) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DISMISS_PRIVACY_NOTIFICATION);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DISMISS_PRIVACY_NOTIFICATION);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
       });
 
   analytics_recoder().NewDismissPrivacyNotification();
 }
 
 TEST_F(AnalyticsRecorderTest, NewScanForShareTargetsEnd) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SCAN_FOR_SHARE_TARGETS_END);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->scan_for_share_targets_end().session_id(), 100);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SCAN_FOR_SHARE_TARGETS_END);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.scan_for_share_targets_end().session_id(), 100);
       });
 
   analytics_recoder().NewScanForShareTargetsEnd(100);
 }
 
 TEST_F(AnalyticsRecorderTest, NewScanForShareTargetsStart) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SCAN_FOR_SHARE_TARGETS_START);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->scan_for_share_targets_start().session_id(), 3);
-        EXPECT_EQ(log->scan_for_share_targets_start().status(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SCAN_FOR_SHARE_TARGETS_START);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.scan_for_share_targets_start().session_id(), 3);
+        EXPECT_EQ(log.scan_for_share_targets_start().status(),
                   ::location::nearby::proto::sharing::SessionStatus::
                       FAILED_SESSION_STATUS);
-        EXPECT_EQ(log->scan_for_share_targets_start().flow_id(), 100);
+        EXPECT_EQ(log.scan_for_share_targets_start().flow_id(), 100);
         EXPECT_EQ(
-            log->scan_for_share_targets_start().scan_type(),
+            log.scan_for_share_targets_start().scan_type(),
             ::location::nearby::proto::sharing::ScanType::FOREGROUND_SCAN);
-        EXPECT_FALSE(log->scan_for_share_targets_start().has_referrer_name());
+        EXPECT_FALSE(log.scan_for_share_targets_start().has_referrer_name());
       });
 
   analytics_recoder().NewScanForShareTargetsStart(
@@ -646,26 +571,24 @@ TEST_F(AnalyticsRecorderTest, NewScanForShareTargetsStart) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendAttachmentsEnd) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_ATTACHMENTS_END);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->send_attachments_end().session_id(), 1);
-        EXPECT_EQ(log->send_attachments_end().sent_bytes(), 2);
-        EXPECT_EQ(log->send_attachments_end().share_target_info().os_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_ATTACHMENTS_END);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.send_attachments_end().session_id(), 1);
+        EXPECT_EQ(log.send_attachments_end().sent_bytes(), 2);
+        EXPECT_EQ(log.send_attachments_end().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::ANDROID);
-        EXPECT_EQ(log->send_attachments_end().share_target_info().device_type(),
+        EXPECT_EQ(log.send_attachments_end().share_target_info().device_type(),
                   ::location::nearby::proto::sharing::DeviceType::PHONE);
-        EXPECT_EQ(log->send_attachments_end().transfer_position(), 1);
-        EXPECT_EQ(log->send_attachments_end().concurrent_connections(), 2);
-        EXPECT_EQ(log->send_attachments_end().duration_millis(), 100);
+        EXPECT_EQ(log.send_attachments_end().transfer_position(), 1);
+        EXPECT_EQ(log.send_attachments_end().concurrent_connections(), 2);
+        EXPECT_EQ(log.send_attachments_end().duration_millis(), 100);
         EXPECT_EQ(
-            log->send_attachments_end().status(),
+            log.send_attachments_end().status(),
             ::location::nearby::proto::sharing::AttachmentTransmissionStatus::
                 COMPLETE_ATTACHMENT_TRANSMISSION_STATUS);
-        EXPECT_EQ(log->send_attachments_end().referrer_name(), kAppPackageName);
+        EXPECT_EQ(log.send_attachments_end().referrer_name(), kAppPackageName);
       });
 
   ShareTarget share_target;
@@ -682,50 +605,44 @@ TEST_F(AnalyticsRecorderTest, NewSendAttachmentsEnd) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendAttachmentsStart) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_ATTACHMENTS_START);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->send_attachments_start().session_id(), 1);
-        EXPECT_EQ(log->send_attachments_start()
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_ATTACHMENTS_START);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.send_attachments_start().session_id(), 1);
+        EXPECT_EQ(log.send_attachments_start()
                       .attachments_info()
                       .file_attachment_size(),
                   0);
-        EXPECT_EQ(log->send_attachments_start().transfer_position(), 100);
-        EXPECT_EQ(log->send_attachments_start().concurrent_connections(), 200);
+        EXPECT_EQ(log.send_attachments_start().transfer_position(), 100);
+        EXPECT_EQ(log.send_attachments_start().concurrent_connections(), 200);
       });
 
-  analytics_recoder().NewSendAttachmentsStart(
-      1, std::vector<std::unique_ptr<Attachment>>(), 100, 200);
+  analytics_recoder().NewSendAttachmentsStart(1, AttachmentContainer(), 100,
+                                              200);
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendFastInitialization) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_FAST_INITIALIZATION);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_FAST_INITIALIZATION);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
       });
 
   analytics_recoder().NewSendFastInitialization();
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendStart) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_START);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->send_start().session_id(), 123);
-        EXPECT_EQ(log->send_start().transfer_position(), 1);
-        EXPECT_EQ(log->send_start().concurrent_connections(), 2);
-        EXPECT_EQ(log->send_start().share_target_info().device_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_START);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.send_start().session_id(), 123);
+        EXPECT_EQ(log.send_start().transfer_position(), 1);
+        EXPECT_EQ(log.send_start().concurrent_connections(), 2);
+        EXPECT_EQ(log.send_start().share_target_info().device_type(),
                   ::location::nearby::proto::sharing::DeviceType::LAPTOP);
-        EXPECT_EQ(log->send_start().share_target_info().os_type(),
+        EXPECT_EQ(log.send_start().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::UNKNOWN_OS_TYPE);
       });
 
@@ -738,19 +655,17 @@ TEST_F(AnalyticsRecorderTest, NewSendStart) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendIntroductionWithRelationship) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_INTRODUCTION);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->send_introduction().session_id(), 5);
-        EXPECT_EQ(log->send_introduction().share_target_info().device_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_INTRODUCTION);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.send_introduction().session_id(), 5);
+        EXPECT_EQ(log.send_introduction().share_target_info().device_type(),
                   ::location::nearby::proto::sharing::DeviceType::LAPTOP);
-        EXPECT_EQ(log->send_introduction().share_target_info().os_type(),
+        EXPECT_EQ(log.send_introduction().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::MACOS);
         EXPECT_EQ(
-            log->send_introduction().share_target_info().device_relationship(),
+            log.send_introduction().share_target_info().device_relationship(),
             ::location::nearby::proto::sharing::DeviceRelationship::IS_CONTACT);
       });
 
@@ -761,18 +676,16 @@ TEST_F(AnalyticsRecorderTest, NewSendIntroductionWithRelationship) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSendIntroduction) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SEND_INTRODUCTION);
-        EXPECT_EQ(log->event_category(), EventCategory::SENDING_EVENT);
-        EXPECT_EQ(log->send_introduction().session_id(), 1);
-        EXPECT_EQ(log->send_introduction().transfer_position(), 2);
-        EXPECT_EQ(log->send_introduction().concurrent_connections(), 3);
-        EXPECT_EQ(log->send_introduction().share_target_info().device_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SEND_INTRODUCTION);
+        EXPECT_EQ(log.event_category(), EventCategory::SENDING_EVENT);
+        EXPECT_EQ(log.send_introduction().session_id(), 1);
+        EXPECT_EQ(log.send_introduction().transfer_position(), 2);
+        EXPECT_EQ(log.send_introduction().concurrent_connections(), 3);
+        EXPECT_EQ(log.send_introduction().share_target_info().device_type(),
                   ::location::nearby::proto::sharing::DeviceType::LAPTOP);
-        EXPECT_EQ(log->send_introduction().share_target_info().os_type(),
+        EXPECT_EQ(log.send_introduction().share_target_info().os_type(),
                   ::location::nearby::proto::sharing::OSType::UNKNOWN_OS_TYPE);
       });
 
@@ -784,17 +697,15 @@ TEST_F(AnalyticsRecorderTest, NewSendIntroduction) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSetVisibility) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SET_VISIBILITY);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->set_visibility().duration_millis(), 100);
-        EXPECT_EQ(log->set_visibility().source_visibility(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SET_VISIBILITY);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.set_visibility().duration_millis(), 100);
+        EXPECT_EQ(log.set_visibility().source_visibility(),
                   ::location::nearby::proto::sharing::Visibility::EVERYONE);
         EXPECT_EQ(
-            log->set_visibility().visibility(),
+            log.set_visibility().visibility(),
             ::location::nearby::proto::sharing::Visibility::CONTACTS_ONLY);
       });
 
@@ -804,18 +715,16 @@ TEST_F(AnalyticsRecorderTest, NewSetVisibility) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewDeviceSettings) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::DEVICE_SETTINGS);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->device_settings().device_name_size(), 10);
-        EXPECT_EQ(log->device_settings().visibility(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::DEVICE_SETTINGS);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.device_settings().device_name_size(), 10);
+        EXPECT_EQ(log.device_settings().visibility(),
                   ::location::nearby::proto::sharing::Visibility::EVERYONE);
-        EXPECT_EQ(log->device_settings().data_usage(),
+        EXPECT_EQ(log.device_settings().data_usage(),
                   ::location::nearby::proto::sharing::DataUsage::WIFI_ONLY);
-        EXPECT_EQ(log->device_settings().is_show_notification_enabled(), true);
+        EXPECT_EQ(log.device_settings().is_show_notification_enabled(), true);
       });
 
   AnalyticsDeviceSettings device_settings;
@@ -827,17 +736,15 @@ TEST_F(AnalyticsRecorderTest, NewDeviceSettings) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewFastShareServerResponse) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::FAST_SHARE_SERVER_RESPONSE);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->fast_share_server_response().latency_millis(), 200);
-        EXPECT_EQ(log->fast_share_server_response().name(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::FAST_SHARE_SERVER_RESPONSE);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.fast_share_server_response().latency_millis(), 200);
+        EXPECT_EQ(log.fast_share_server_response().name(),
                   ::location::nearby::proto::sharing::ServerActionName::
                       UPLOAD_CONTACTS);
-        EXPECT_EQ(log->fast_share_server_response().status(),
+        EXPECT_EQ(log.fast_share_server_response().status(),
                   ::location::nearby::proto::sharing::ServerResponseState::
                       SERVER_RESPONSE_SUCCESS);
       });
@@ -850,15 +757,13 @@ TEST_F(AnalyticsRecorderTest, NewFastShareServerResponse) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSetDataUsage) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SET_DATA_USAGE);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->set_data_usage().preference(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SET_DATA_USAGE);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.set_data_usage().preference(),
                   ::location::nearby::proto::sharing::DataUsage::OFFLINE);
-        EXPECT_EQ(log->set_data_usage().original_preference(),
+        EXPECT_EQ(log.set_data_usage().original_preference(),
                   ::location::nearby::proto::sharing::DataUsage::WIFI_ONLY);
       });
 
@@ -867,52 +772,44 @@ TEST_F(AnalyticsRecorderTest, NewSetDataUsage) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewAddQuickSettingsTile) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::ADD_QUICK_SETTINGS_TILE);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::ADD_QUICK_SETTINGS_TILE);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewAddQuickSettingsTile();
 }
 
 TEST_F(AnalyticsRecorderTest, NewRemoveQuickSettingsTile) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::REMOVE_QUICK_SETTINGS_TILE);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::REMOVE_QUICK_SETTINGS_TILE);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewRemoveQuickSettingsTile();
 }
 
 TEST_F(AnalyticsRecorderTest, NewTapQuickSettingsTile) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::TAP_QUICK_SETTINGS_TILE);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::TAP_QUICK_SETTINGS_TILE);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
       });
 
   analytics_recoder().NewTapQuickSettingsTile();
 }
 
 TEST_F(AnalyticsRecorderTest, NewToggleShowNotification) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::TOGGLE_SHOW_NOTIFICATION);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::TOGGLE_SHOW_NOTIFICATION);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
         EXPECT_EQ(
-            log->toggle_show_notification().previous_status(),
+            log.toggle_show_notification().previous_status(),
             ::location::nearby::proto::sharing::ShowNotificationStatus::SHOW);
-        EXPECT_EQ(log->toggle_show_notification().current_status(),
+        EXPECT_EQ(log.toggle_show_notification().current_status(),
                   ::location::nearby::proto::sharing::ShowNotificationStatus::
                       NOT_SHOW);
       });
@@ -923,30 +820,26 @@ TEST_F(AnalyticsRecorderTest, NewToggleShowNotification) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewSetDeviceName) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::SET_DEVICE_NAME);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->set_device_name().device_name_size(), 16);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::SET_DEVICE_NAME);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.set_device_name().device_name_size(), 16);
       });
 
   analytics_recoder().NewSetDeviceName(16);
 }
 
 TEST_F(AnalyticsRecorderTest, NewRequestSettingPermissions) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::REQUEST_SETTING_PERMISSIONS);
-        EXPECT_EQ(log->event_category(), EventCategory::SETTINGS_EVENT);
-        EXPECT_EQ(log->request_setting_permissions().permission_type(),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::REQUEST_SETTING_PERMISSIONS);
+        EXPECT_EQ(log.event_category(), EventCategory::SETTINGS_EVENT);
+        EXPECT_EQ(log.request_setting_permissions().permission_type(),
                   ::location::nearby::proto::sharing::PermissionRequestType::
                       PERMISSION_BLUETOOTH);
         EXPECT_EQ(
-            log->request_setting_permissions().permission_request_result(),
+            log.request_setting_permissions().permission_request_result(),
             ::location::nearby::proto::sharing::PermissionRequestResult::
                 PERMISSION_GRANTED);
       });
@@ -959,17 +852,15 @@ TEST_F(AnalyticsRecorderTest, NewRequestSettingPermissions) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewInstallAPKStatus) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::INSTALL_APK);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
-        EXPECT_EQ(log->install_apk_status().status(0),
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::INSTALL_APK);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
+        EXPECT_EQ(log.install_apk_status().status(0),
                   ::location::nearby::proto::sharing::InstallAPKStatus::
                       SUCCESS_INSTALLATION);
         EXPECT_EQ(
-            log->install_apk_status().source(0),
+            log.install_apk_status().source(0),
             ::location::nearby::proto::sharing::ApkSource::APK_FROM_SD_CARD);
       });
 
@@ -980,23 +871,38 @@ TEST_F(AnalyticsRecorderTest, NewInstallAPKStatus) {
 }
 
 TEST_F(AnalyticsRecorderTest, NewVerifyAPKStatus) {
-  EXPECT_CALL(event_logger(), Log)
-      .WillOnce([=](const ::google::protobuf::MessageLite& message) {
-        auto log = dynamic_cast<const SharingLog*>(&message);
-        ASSERT_NE(log, nullptr);
-        EXPECT_EQ(log->event_type(), EventType::VERIFY_APK);
-        EXPECT_EQ(log->event_category(), EventCategory::RECEIVING_EVENT);
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::VERIFY_APK);
+        EXPECT_EQ(log.event_category(), EventCategory::RECEIVING_EVENT);
         EXPECT_EQ(
-            log->verify_apk_status().status(0),
+            log.verify_apk_status().status(0),
             ::location::nearby::proto::sharing::VerifyAPKStatus::INSTALLABLE);
         EXPECT_EQ(
-            log->verify_apk_status().source(0),
+            log.verify_apk_status().source(0),
             ::location::nearby::proto::sharing::ApkSource::APK_FROM_SD_CARD);
       });
 
   analytics_recoder().NewVerifyAPKStatus(
       ::location::nearby::proto::sharing::VerifyAPKStatus::INSTALLABLE,
       ::location::nearby::proto::sharing::ApkSource::APK_FROM_SD_CARD);
+}
+
+TEST_F(AnalyticsRecorderTest, NewRpcCallStatus) {
+  EXPECT_CALL(event_logger(), Log(An<const SharingLog&>()))
+      .WillOnce([](const SharingLog& log) {
+        EXPECT_EQ(log.event_type(), EventType::RPC_CALL_STATUS);
+        EXPECT_EQ(log.event_category(), EventCategory::RPC_EVENT);
+        EXPECT_EQ(log.rpc_call_status().rpc_name(), "service.rpc_name");
+        EXPECT_EQ(log.rpc_call_status().direction(),
+                  SharingLog::RpcCallStatus::OUTGOING);
+        EXPECT_EQ(log.rpc_call_status().error_code(), 123);
+        EXPECT_EQ(log.rpc_call_status().latency_millis(), 456);
+      });
+
+  analytics_recoder().NewRpcCallStatus(
+      "service.rpc_name", SharingLog::RpcCallStatus::OUTGOING, 123,
+      absl::Milliseconds(456));
 }
 
 TEST_F(AnalyticsRecorderTest, GenerateID) {

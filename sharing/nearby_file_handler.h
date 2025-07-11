@@ -17,12 +17,14 @@
 
 #include <stdint.h>
 
-#include <filesystem>  // NOLINT(build/c++17)
 #include <functional>
 #include <memory>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
+#include "internal/base/file_path.h"
 #include "internal/platform/task_runner.h"
+#include "sharing/internal/api/sharing_platform.h"
 
 namespace nearby {
 namespace sharing {
@@ -32,31 +34,32 @@ namespace sharing {
 class NearbyFileHandler {
  public:
   struct FileInfo {
-    int64_t size;
-    std::filesystem::path file_path;
+    uint64_t size;
+    FilePath file_path;
   };
 
   using OpenFilesCallback = std::function<void(std::vector<FileInfo>)>;
-  using GetUniquePathCallback = std::function<void(std::filesystem::path)>;
   using DeleteFilesFromDiskCallback = std::function<void()>;
 
-  NearbyFileHandler();
+  explicit NearbyFileHandler(nearby::sharing::api::SharingPlatform& platform);
   ~NearbyFileHandler();
 
   // Open the files given in |file_paths| and return the opened files sizes via
   // |callback|. If any file fails to open, return an empty list.
-  void OpenFiles(std::vector<std::filesystem::path> file_paths,
-                 OpenFilesCallback callback);
+  void OpenFiles(std::vector<FilePath> file_paths, OpenFilesCallback callback);
 
-  void DeleteFilesFromDisk(std::vector<std::filesystem::path> file_paths,
+  void DeleteFilesFromDisk(std::vector<FilePath> file_paths,
                            DeleteFilesFromDiskCallback callback);
 
-  // Finds a unique path name for |file_path| and runs |callback| with the same.
-  void GetUniquePath(const std::filesystem::path& file_path,
-                     GetUniquePathCallback callback);
+  // On platforms where it is supported, tag the transferred files as
+  // originating from an untrusted source.
+  void UpdateFilesOriginMetadata(
+      std::vector<FilePath> file_paths,
+      absl::AnyInvocable<void(bool success)> callback);
 
  private:
-  std::unique_ptr<TaskRunner> sequenced_task_runner_ = nullptr;
+  nearby::sharing::api::SharingPlatform& platform_;
+  std::unique_ptr<TaskRunner> sequenced_task_runner_;
 };
 
 }  // namespace sharing

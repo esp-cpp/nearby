@@ -17,7 +17,6 @@
 
 #include <stdint.h>
 
-#include <filesystem>  // NOLINT(build/c++17)
 #include <functional>
 #include <map>
 #include <memory>
@@ -27,9 +26,13 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "internal/base/file_path.h"
 #include "sharing/common/nearby_share_enums.h"
+#include "sharing/nearby_connection.h"
 #include "sharing/nearby_connections_manager.h"
 #include "sharing/nearby_connections_types.h"
 
@@ -47,9 +50,11 @@ class FakeNearbyConnectionsManager : public NearbyConnectionsManager {
   void StartAdvertising(std::vector<uint8_t> endpoint_info,
                         IncomingConnectionListener* listener,
                         PowerLevel power_level, proto::DataUsage data_usage,
+                        bool use_stable_endpoint_id,
                         ConnectionsCallback callback) override;
   void StopAdvertising(ConnectionsCallback callback) override;
   void StartDiscovery(DiscoveryListener* listener, proto::DataUsage data_usage,
+                      std::optional<uint16_t> alternate_service_uuid,
                       ConnectionsCallback callback) override;
   void StopDiscovery() override;
   void Connect(std::vector<uint8_t> endpoint_info,
@@ -63,16 +68,14 @@ class FakeNearbyConnectionsManager : public NearbyConnectionsManager {
   void RegisterPayloadStatusListener(
       int64_t payload_id,
       std::weak_ptr<PayloadStatusListener> listener) override;
-  void RegisterPayloadPath(int64_t payload_id,
-                           const std::filesystem::path& file_path,
-                           ConnectionsCallback callback) override;
-  Payload* GetIncomingPayload(int64_t payload_id) override;
+  const Payload* GetIncomingPayload(int64_t payload_id) const override;
   void Cancel(int64_t payload_id) override;
   void ClearIncomingPayloads() override;
   std::optional<std::vector<uint8_t>> GetRawAuthenticationToken(
       absl::string_view endpoint_id) override;
   void UpgradeBandwidth(absl::string_view endpoint_id) override;
   void SetCustomSavePath(absl::string_view custom_save_path) override;
+  absl::flat_hash_set<FilePath> GetAndClearUnknownFilePathsToDelete() override;
 
   // Testing methods
   void SetRawAuthenticationToken(absl::string_view endpoint_id,
@@ -85,12 +88,9 @@ class FakeNearbyConnectionsManager : public NearbyConnectionsManager {
   bool IsAdvertising() const;
   bool IsDiscovering() const;
   bool DidUpgradeBandwidth(absl::string_view endpoint_id) const;
-  void SetPayloadPathStatus(int64_t payload_id, ConnectionsStatus status);
   std::weak_ptr<PayloadStatusListener> GetRegisteredPayloadStatusListener(
       int64_t payload_id);
   void SetIncomingPayload(int64_t payload_id, std::unique_ptr<Payload> payload);
-  std::optional<std::filesystem::path> GetRegisteredPayloadPath(
-      int64_t payload_id);
   bool WasPayloadCanceled(int64_t payload_id) const;
   void CleanupForProcessStopped();
   ConnectionsCallback GetStartAdvertisingCallback();
@@ -122,20 +122,35 @@ class FakeNearbyConnectionsManager : public NearbyConnectionsManager {
 
   std::optional<std::vector<uint8_t>> connection_endpoint_info(
       absl::string_view endpoint_id) {
+    absl::MutexLock lock(&endpoints_mutex_);
     auto it = connection_endpoint_infos_.find(std::string(endpoint_id));
     if (it == connection_endpoint_infos_.end()) return std::nullopt;
 
     return it->second;
   }
 
-  bool has_incoming_payloads() { return !incoming_payloads_.empty(); }
+  bool has_incoming_payloads() {
+    absl::MutexLock lock(&incoming_payloads_mutex_);
+    return !incoming_payloads_.empty();
+  }
+
+  absl::flat_hash_set<FilePath> GetUnknownFilePathsToDeleteForTesting();
+  void AddUnknownFilePathsToDeleteForTesting(FilePath file_path);
+
+  // Add `connection` to list of connections as if it was accepted.
+  void AcceptConnection(std::vector<uint8_t> endpoint_info,
+                        absl::string_view endpoint_id,
+                        NearbyConnection* connection);
 
  private:
   void HandleStartAdvertisingCallback(ConnectionsStatus status);
   void HandleStopAdvertisingCallback(ConnectionsStatus status);
 
-  IncomingConnectionListener* advertising_listener_ = nullptr;
-  DiscoveryListener* discovery_listener_ = nullptr;
+  mutable absl::Mutex listener_mutex_;
+  IncomingConnectionListener* advertising_listener_
+      ABSL_GUARDED_BY(listener_mutex_) = nullptr;
+  DiscoveryListener* discovery_listener_ ABSL_GUARDED_BY(listener_mutex_) =
+      nullptr;
   bool is_shutdown_ = false;
   proto::DataUsage advertising_data_usage_ =
       proto::DataUsage::UNKNOWN_DATA_USAGE;
@@ -157,15 +172,17 @@ class FakeNearbyConnectionsManager : public NearbyConnectionsManager {
   ConnectionsCallback pending_start_advertising_callback_;
   std::string custom_save_path_;
 
+  absl::Mutex endpoints_mutex_;
   // Maps endpoint_id to endpoint_info.
-  std::map<std::string, std::vector<uint8_t>> connection_endpoint_infos_;
+  std::map<std::string, std::vector<uint8_t>> connection_endpoint_infos_
+      ABSL_GUARDED_BY(endpoints_mutex_);
 
-  std::map<int64_t, ConnectionsStatus> payload_path_status_;
   std::map<int64_t, std::weak_ptr<PayloadStatusListener>>
       payload_status_listeners_;
-  std::map<int64_t, std::unique_ptr<Payload>> incoming_payloads_;
-  std::map<int64_t, std::filesystem::path> registered_payload_paths_;
-
+  mutable absl::Mutex incoming_payloads_mutex_;
+  std::map<int64_t, std::unique_ptr<Payload>> incoming_payloads_
+      ABSL_GUARDED_BY(incoming_payloads_mutex_);
+  absl::flat_hash_set<FilePath> file_paths_to_delete_;
   std::string Dump() const override;
 };
 

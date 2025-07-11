@@ -1,3 +1,17 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 licenses(["notice"])
 
 cc_library(
@@ -26,17 +40,24 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//internal/base",
+        "//internal/base:file_path",
         "//internal/crypto_cros",
+        "//internal/flags:nearby_flags",
         "//internal/platform:types",
-        "//internal/platform/implementation:types",
+        "//internal/platform/implementation:account_manager",
+        "//proto/identity/v1:resources_cc_proto",
+        "//proto/identity/v1:rpcs_cc_proto",
         "//sharing/common",
         "//sharing/common:enum",
         "//sharing/contacts",
+        "//sharing/flags/generated:generated_flags",
         "//sharing/internal/api:platform",
         "//sharing/internal/base",
+        "//sharing/internal/impl/common:nearby_identity_grpc_client",
         "//sharing/internal/public:logging",
         "//sharing/internal/public:types",
         "//sharing/local_device_data",
+        "//sharing/proto:enums_cc_proto",
         "//sharing/proto:share_cc_proto",
         "//sharing/scheduling",
         "@com_google_absl//absl/container:btree",
@@ -72,12 +93,14 @@ cc_library(
     deps = [
         ":certificates",
         "//internal/base:bluetooth_address",
+        "//internal/base:file_path",
         "//internal/crypto_cros",
         "//sharing/common:enum",
         "//sharing/contacts",
         "//sharing/internal/api:platform",
         "//sharing/internal/public:types",
         "//sharing/local_device_data",
+        "//sharing/proto:enums_cc_proto",
         "//sharing/proto:share_cc_proto",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/time",
@@ -97,16 +120,21 @@ cc_test(
     deps = [
         ":certificates",
         ":test_support",
-        "//internal/platform/implementation:types",
+        "//internal/flags:nearby_flags",
+        "//internal/platform/implementation:account_manager",
         "//internal/platform/implementation/g3",  # fixdeps: keep
         "//internal/test",
+        "//proto/identity/v1:resources_cc_proto",
+        "//proto/identity/v1:rpcs_cc_proto",
         "//sharing/common",
         "//sharing/common:enum",
         "//sharing/contacts:test_support",
+        "//sharing/flags/generated:generated_flags",
         "//sharing/internal/api:mock_sharing_platform",
         "//sharing/internal/public:logging",
         "//sharing/internal/test:nearby_test",
         "//sharing/local_device_data:test_support",
+        "//sharing/proto:enums_cc_proto",
         "//sharing/proto:share_cc_proto",
         "//sharing/scheduling",
         "//sharing/scheduling:test_support",

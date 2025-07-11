@@ -14,34 +14,26 @@
 
 #include "internal/test/fake_account_manager.h"
 
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "internal/platform/implementation/account_manager.h"
+#include "internal/platform/implementation/signin_attempt.h"
 
 namespace nearby {
 
 std::optional<AccountManager::Account> FakeAccountManager::GetCurrentAccount() {
-  if (user_name_.has_value()) {
-    return account_;
-  }
-  return std::nullopt;
+  return account_;
 }
 
-void FakeAccountManager::Login(
-    absl::AnyInvocable<void(Account)> login_success_callback,
-    absl::AnyInvocable<void()> login_failure_callback) {
-  if (account_.has_value()) {
-    login_success_callback(*account_);
-    UpdateCurrentUser(account_->id);
-    NotifyLogin(account_->id);
-    return;
-  }
-
-  login_failure_callback();
+std::unique_ptr<SigninAttempt> FakeAccountManager::Login(
+    absl::string_view client_id, absl::string_view client_secret) {
+  return nullptr;
 }
 
 void FakeAccountManager::Logout(
@@ -49,8 +41,10 @@ void FakeAccountManager::Logout(
   if (is_logout_success_) {
     std::string account_id = account_->id;
     SetAccount(std::nullopt);
+    NotifyLogout(account_id, /*credential_error=*/false);
+    // Invoke callback after all operations have been performed since test cases
+    // may rely on the callback for synchronization.
     logout_callback(absl::OkStatus());
-    NotifyLogout(account_id);
     return;
   }
 
@@ -69,21 +63,13 @@ bool FakeAccountManager::GetAccessToken(
   return true;
 }
 
+std::pair<std::string, std::string>
+FakeAccountManager::GetOAuthClientCredential() {
+  return {"", ""};
+}
+
 void FakeAccountManager::SetAccount(std::optional<Account> account) {
   account_ = account;
-  if (account_.has_value()) {
-    UpdateCurrentUser(account_->id);
-  } else {
-    ClearCurrentUser();
-  }
-}
-
-void FakeAccountManager::UpdateCurrentUser(absl::string_view current_user) {
-  user_name_ = current_user;
-}
-
-void FakeAccountManager::ClearCurrentUser() {
-  user_name_.reset();
 }
 
 void FakeAccountManager::AddObserver(Observer* observer) {
@@ -103,9 +89,10 @@ void FakeAccountManager::NotifyLogin(absl::string_view account_id) {
   }
 }
 
-void FakeAccountManager::NotifyLogout(absl::string_view account_id) {
+void FakeAccountManager::NotifyLogout(absl::string_view account_id,
+                                      bool credential_error) {
   for (const auto& observer : observers_.GetObservers()) {
-    observer->OnLogoutSucceeded(account_id);
+    observer->OnLogoutSucceeded(account_id, credential_error);
   }
 }
 

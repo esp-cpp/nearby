@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "absl/strings/string_view.h"
+#include "internal/base/file_path.h"
 #include "sharing/certificates/nearby_share_certificate_manager.h"
 #include "sharing/certificates/nearby_share_encrypted_metadata_key.h"
 #include "sharing/certificates/nearby_share_private_certificate.h"
@@ -32,6 +32,7 @@
 #include "sharing/internal/api/sharing_rpc_client.h"
 #include "sharing/internal/public/context.h"
 #include "sharing/local_device_data/nearby_share_local_device_data_manager.h"
+#include "sharing/proto/enums.pb.h"
 #include "sharing/proto/rpc_resources.pb.h"
 
 namespace nearby {
@@ -49,7 +50,7 @@ std::unique_ptr<NearbyShareCertificateManager>
 FakeNearbyShareCertificateManager::Factory::CreateInstance(
     nearby::Context* context,
     NearbyShareLocalDeviceDataManager* local_device_data_manager,
-    NearbyShareContactManager* contact_manager, absl::string_view profile_path,
+    NearbyShareContactManager* contact_manager, const FilePath& profile_path,
     nearby::sharing::api::SharingRpcClientFactory* client_factory) {
   auto instance = std::make_unique<FakeNearbyShareCertificateManager>();
   instances_.push_back(instance.get());
@@ -112,6 +113,10 @@ void FakeNearbyShareCertificateManager::OnStop() {}
 std::optional<NearbySharePrivateCertificate>
 FakeNearbyShareCertificateManager::GetValidPrivateCertificate(
     DeviceVisibility visibility) const {
+  if (visibility == DeviceVisibility::DEVICE_VISIBILITY_EVERYONE ||
+      visibility == DeviceVisibility::DEVICE_VISIBILITY_HIDDEN) {
+    return std::nullopt;
+  }
   auto cert = GetNearbyShareTestPrivateCertificate(visibility);
   cert.next_salts_for_testing() = std::queue<std::vector<uint8_t>>();
   cert.next_salts_for_testing().push(next_salt_);

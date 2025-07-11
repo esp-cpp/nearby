@@ -15,12 +15,13 @@
 #ifndef THIRD_PARTY_NEARBY_INTERNAL_TEST_FAKE_TASK_RUNNER_H_
 #define THIRD_PARTY_NEARBY_INTERNAL_TEST_FAKE_TASK_RUNNER_H_
 
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
+#include "absl/functional/any_invocable.h"
+#include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "internal/platform/multi_thread_executor.h"
 #include "internal/platform/task_runner.h"
@@ -46,15 +47,13 @@ class FakeTaskRunner : public TaskRunner {
                        absl::AnyInvocable<void()> task) override
       ABSL_LOCKS_EXCLUDED(mutex_);
 
+  void Shutdown() override ABSL_LOCKS_EXCLUDED(mutex_);
+
   // Wait for all thread completed.
   void Sync();
 
   // In some test cases, we only need to wait for a timeout .
   bool SyncWithTimeout(absl::Duration timeout);
-
-  // In some test cases, we need to make sure all running tasks completion
-  // before go to next task. This method can be used for the purpose.
-  static bool WaitForRunningTasksWithTimeout(absl::Duration timeout);
 
  private:
   mutable absl::Mutex mutex_;
@@ -65,8 +64,6 @@ class FakeTaskRunner : public TaskRunner {
 
   // Tracks delayed tasks.
   std::vector<std::unique_ptr<Timer>> timers_ ABSL_GUARDED_BY(mutex_);
-
-  static std::atomic_uint total_running_thread_count_;
 };
 
 }  // namespace nearby

@@ -21,7 +21,13 @@
 namespace nearby {
 namespace sharing {
 
+// LINT.IfChange(sharing_max_name_length_bytes)
 const size_t kNearbyShareDeviceNameMaxLength = 32;
+// LINT.ThenChange(
+// //depot/google3/location/nearby/apps/better_together/windows/nearby_share/testing/functional/quick_share_transfer_without_login_api_test.py:sharing_max_name_length_bytes,
+// //depot/google3/location/nearby/testing/nearby_native/client_windows/nearby_sharing_snippet.cc:sharing_max_name_length_bytes,
+// //depot/google3/java/com/google/android/gmscore/integ/modules/nearby/src/com/google/android/gms/nearby/sharing/res/values/ints.xml:sharing_max_name_length_bytes,
+// //depot/google3/javatests/com/google/android/gmscore/integ/modules/nearby/mobly/snippets/sharing/SharingClientSnippet.java:sharing_max_name_length_bytes)
 
 NearbyShareLocalDeviceDataManager::NearbyShareLocalDeviceDataManager() =
     default;
@@ -41,24 +47,22 @@ void NearbyShareLocalDeviceDataManager::Start() {
   if (is_running_) return;
 
   is_running_ = true;
-  OnStart();
 }
 
 void NearbyShareLocalDeviceDataManager::Stop() {
   if (!is_running_) return;
 
   is_running_ = false;
-  OnStop();
 }
 
 void NearbyShareLocalDeviceDataManager::NotifyLocalDeviceDataChanged(
     bool did_device_name_change, bool did_full_name_change,
     bool did_icon_change) {
-  NL_LOG(INFO) << __func__ << ": did_device_name_change="
-               << (did_device_name_change ? "true" : "false")
-               << ", did_full_name_change="
-               << (did_full_name_change ? "true" : "false")
-               << ", did_icon_change=" << (did_icon_change ? "true" : "false");
+  LOG(INFO) << __func__ << ": did_device_name_change="
+            << (did_device_name_change ? "true" : "false")
+            << ", did_full_name_change="
+            << (did_full_name_change ? "true" : "false")
+            << ", did_icon_change=" << (did_icon_change ? "true" : "false");
   for (auto& observer : observers_.GetObservers()) {
     observer->OnLocalDeviceDataChanged(did_device_name_change,
                                        did_full_name_change, did_icon_change);

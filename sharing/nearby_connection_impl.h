@@ -17,44 +17,40 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <queue>
-#include <string>
 #include <vector>
 
 #include "absl/base/thread_annotations.h"
-#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "internal/platform/device_info.h"
-#include "internal/platform/mutex.h"
 #include "sharing/nearby_connection.h"
 
-namespace nearby {
-namespace sharing {
+namespace nearby::sharing {
 
 class NearbyConnectionsManager;
 
 class NearbyConnectionImpl : public NearbyConnection {
  public:
-  NearbyConnectionImpl(nearby::DeviceInfo& device_info,
-                       NearbyConnectionsManager* nearby_connections_manager,
-                       absl::string_view endpoint_id);
+  explicit NearbyConnectionImpl(nearby::DeviceInfo& device_info);
   ~NearbyConnectionImpl() override;
 
   // NearbyConnection:
-  void Read(ReadCallback callback) override;
-  void Write(std::vector<uint8_t> bytes) override;
-  void Close() override;
-  void SetDisconnectionListener(std::function<void()> listener) override;
+  void Read(
+      std::function<void(std::optional<std::vector<uint8_t>> bytes)> callback)
+      ABSL_LOCKS_EXCLUDED(mutex_) override;
+  void SetDisconnectionListener(std::function<void()> listener)
+      ABSL_LOCKS_EXCLUDED(mutex_) override;
 
   // Add bytes to the read queue, notifying ReadCallback.
-  void WriteMessage(std::vector<uint8_t> bytes);
+  void WriteMessage(std::vector<uint8_t> bytes) ABSL_LOCKS_EXCLUDED(mutex_);
 
  private:
   nearby::DeviceInfo& device_info_;
-  NearbyConnectionsManager* const nearby_connections_manager_;
-  std::string endpoint_id_;
 
-  RecursiveMutex mutex_;
-  ReadCallback read_callback_ ABSL_GUARDED_BY(mutex_) = nullptr;
+  absl::Mutex mutex_;
+  std::function<void(std::optional<std::vector<uint8_t>> bytes)> read_callback_
+      ABSL_GUARDED_BY(mutex_) = nullptr;
   std::function<void()> disconnect_listener_ ABSL_GUARDED_BY(mutex_);
 
   // A read queue. The data that we've read from the remote device ends up here
@@ -62,7 +58,6 @@ class NearbyConnectionImpl : public NearbyConnection {
   std::queue<std::vector<uint8_t>> reads_ ABSL_GUARDED_BY(mutex_);
 };
 
-}  // namespace sharing
-}  // namespace nearby
+}  // namespace nearby::sharing
 
 #endif  // THIRD_PARTY_NEARBY_SHARING_NEARBY_CONNECTION_IMPL_H_

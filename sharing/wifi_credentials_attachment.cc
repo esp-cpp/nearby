@@ -14,22 +14,23 @@
 
 #include "sharing/wifi_credentials_attachment.h"
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <string>
 #include <utility>
 
 #include "absl/strings/string_view.h"
+#include "proto/sharing_enums.pb.h"
 #include "sharing/attachment.h"
 #include "sharing/common/nearby_share_enums.h"
-#include "sharing/share_target.h"
 
 namespace nearby {
 namespace sharing {
 
+using ::location::nearby::proto::sharing::AttachmentSourceType;
+
 WifiCredentialsAttachment::WifiCredentialsAttachment(
     std::string ssid, SecurityType security_type, std::string password,
-    bool is_hidden, int32_t batch_id, SourceType source_type)
+    bool is_hidden, int32_t batch_id, AttachmentSourceType source_type)
     : Attachment(Attachment::Family::kWifiCredentials, ssid.size(), batch_id,
                  source_type),
       ssid_(ssid),
@@ -40,17 +41,13 @@ WifiCredentialsAttachment::WifiCredentialsAttachment(
 WifiCredentialsAttachment::WifiCredentialsAttachment(
     int64_t id, std::string ssid, SecurityType security_type,
     std::string password, bool is_hidden, int32_t batch_id,
-    SourceType source_type)
+    AttachmentSourceType source_type)
     : Attachment(id, Attachment::Family::kWifiCredentials, ssid.size(),
                  batch_id, source_type),
       ssid_(ssid),
       security_type_(security_type),
       password_(std::move(password)),
       is_hidden_(is_hidden) {}
-
-void WifiCredentialsAttachment::MoveToShareTarget(ShareTarget& share_target) {
-  share_target.wifi_credentials_attachments.push_back(std::move(*this));
-}
 
 absl::string_view WifiCredentialsAttachment::GetDescription() const {
   return ssid_;

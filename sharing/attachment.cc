@@ -14,25 +14,28 @@
 
 #include "sharing/attachment.h"
 
-#include <stdint.h>
+#include <cstdint>
+#include <limits>
 
-#include "internal/crypto_cros/random.h"
+#include "absl/random/random.h"
+#include "proto/sharing_enums.pb.h"
 
 namespace nearby {
 namespace sharing {
 namespace {
 
+using ::location::nearby::proto::sharing::AttachmentSourceType;
+
 int64_t CreateRandomId() {
-  int64_t id;
-  crypto::RandBytes(&id, sizeof(id));
-  return id;
+  absl::BitGen gen;
+  return absl::Uniform<int64_t>(gen, 1, std::numeric_limits<int64_t>::max());
 }
 
 }  // namespace
 
 // TODO(b/258690183): Add unit tests for Attachment with same and different ids
 Attachment::Attachment(Attachment::Family family, int64_t size,
-                       int32_t batch_id, SourceType source_type)
+                       int32_t batch_id, AttachmentSourceType source_type)
     : id_(CreateRandomId()),
       family_(family),
       size_(size),
@@ -40,8 +43,8 @@ Attachment::Attachment(Attachment::Family family, int64_t size,
       source_type_(source_type) {}
 
 Attachment::Attachment(int64_t id, Attachment::Family family, int64_t size,
-                       int32_t batch_id, SourceType source_type)
-    : id_(id),
+                       int32_t batch_id, AttachmentSourceType source_type)
+    : id_(id == 0 ? CreateRandomId() : id),
       family_(family),
       size_(size),
       batch_id_(batch_id),

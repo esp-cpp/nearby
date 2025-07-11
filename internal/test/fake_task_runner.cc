@@ -18,24 +18,26 @@
 #include <utility>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
-#include "internal/platform/count_down_latch.h"
+#include "internal/platform/timer.h"
 #include "internal/test/fake_timer.h"
 
 namespace nearby {
 
-std::atomic_uint FakeTaskRunner::total_running_thread_count_ = 0;
+FakeTaskRunner::~FakeTaskRunner() { Shutdown(); }
 
-FakeTaskRunner::~FakeTaskRunner() { absl::MutexLock lock(&mutex_); }
+void FakeTaskRunner::Shutdown() {
+  absl::MutexLock lock(&mutex_);
+  task_executor_->Shutdown();
+}
 
 bool FakeTaskRunner::PostTask(absl::AnyInvocable<void()> task) {
   absl::MutexLock lock(&mutex_);
-  ++total_running_thread_count_;
   task_executor_->Execute([task = std::move(task)]() mutable {
     task();
-    --total_running_thread_count_;
   });
   return true;
 }
@@ -59,23 +61,9 @@ void FakeTaskRunner::Sync() {
 }
 
 bool FakeTaskRunner::SyncWithTimeout(absl::Duration timeout) {
-  CountDownLatch latch(count_);
-  for (int i = 0; i < count_; ++i) {
-    PostTask([&] { latch.CountDown(); });
-  }
-
-  auto result = latch.Await(timeout);
-  return result.ok() && result.result();
-}
-
-bool FakeTaskRunner::WaitForRunningTasksWithTimeout(absl::Duration timeout) {
-  int i = (timeout / absl::Milliseconds(1)) / 50;
-  while (total_running_thread_count_ != 0 && i > 0) {
-    absl::SleepFor(absl::Milliseconds(50));
-    --i;
-  }
-
-  return total_running_thread_count_ == 0;
+  absl::Notification notification;
+  PostTask([&] { notification.Notify(); });
+  return notification.WaitForNotificationWithTimeout(timeout);
 }
 
 }  // namespace nearby

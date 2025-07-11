@@ -16,14 +16,12 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <filesystem>  // NOLINT(build/c++17)
 #include <functional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "internal/platform/file.h"
-#include "sharing/common/compatible_u8_string.h"
 #include "sharing/internal/public/logging.h"
 #include "sharing/nearby_connections_types.h"
 
@@ -37,17 +35,16 @@ Status ConvertToStatus(NcStatus status) {
 Payload ConvertToPayload(NcPayload payload) {
   switch (payload.GetType()) {
     case NcPayloadType::kBytes: {
-      NcByteArray bytes = payload.AsBytes();
+      const NcByteArray& bytes = payload.AsBytes();
       std::string data = std::string(bytes);
       return Payload(payload.GetId(),
                      std::vector<uint8_t>(data.begin(), data.end()));
     }
     case NcPayloadType::kFile: {
-      std::filesystem::path file_path =
-          std::filesystem::u8path(payload.AsFile()->GetFilePath());
+      std::string file_path = payload.AsFile()->GetFilePath();
       std::string parent_folder = payload.GetParentFolder();
-      NL_VLOG(1) << __func__ << ": Payload file_path=" << file_path
-                 << ", parent_folder = " << parent_folder;
+      VLOG(1) << __func__ << ": Payload file_path=" << file_path
+              << ", parent_folder = " << parent_folder;
       return Payload(payload.GetId(), InputFile(file_path), parent_folder);
     }
     default:
@@ -59,14 +56,13 @@ NcPayload ConvertToServicePayload(Payload payload) {
   switch (payload.content.type) {
     case PayloadContent::Type::kFile: {
       int64_t file_size = payload.content.file_payload.size;
-      std::string file_path = GetCompatibleU8String(
-          payload.content.file_payload.file.path.u8string());
-      std::string file_name = GetCompatibleU8String(
-          payload.content.file_payload.file.path.filename().u8string());
+      std::string file_path = payload.content.file_payload.file.path.ToString();
+      std::string file_name =
+          payload.content.file_payload.file.path.GetFileName().ToString();
       std::string parent_folder = payload.content.file_payload.parent_folder;
       std::replace(parent_folder.begin(), parent_folder.end(), '\\', '/');
-      NL_VLOG(1) << __func__ << ": NC Payload file_path=" << file_path
-                 << ", parent_folder = " << parent_folder;
+      VLOG(1) << __func__ << ": NC Payload file_path=" << file_path
+              << ", parent_folder = " << parent_folder;
       nearby::InputFile input_file(file_path, file_size);
       NcPayload nc_payload(payload.id, parent_folder, file_name,
                            std::move(input_file));

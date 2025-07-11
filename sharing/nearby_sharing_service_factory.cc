@@ -14,20 +14,20 @@
 
 #include "sharing/nearby_sharing_service_factory.h"
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 
 #include "internal/analytics/event_logger.h"
+#include "internal/platform/task_runner.h"
+#include "sharing/analytics/analytics_recorder.h"
 #include "sharing/internal/api/sharing_platform.h"
 #include "sharing/internal/public/context_impl.h"
 #include "sharing/nearby_connections_manager_factory.h"
-#include "sharing/nearby_sharing_decoder_impl.h"
-#include "sharing/nearby_sharing_event_logger.h"
 #include "sharing/nearby_sharing_service.h"
 #include "sharing/nearby_sharing_service_impl.h"
 
-namespace nearby {
-namespace sharing {
+namespace nearby::sharing {
 
 using ::nearby::sharing::api::SharingPlatform;
 
@@ -38,30 +38,27 @@ NearbySharingServiceFactory* NearbySharingServiceFactory::GetInstance() {
 }
 
 NearbySharingService* NearbySharingServiceFactory::CreateSharingService(
-    LinkType link_type,
     SharingPlatform& sharing_platform,
-    std::unique_ptr<::nearby::analytics::EventLogger> event_logger) {
+    analytics::AnalyticsRecorder* analytics_recorder,
+    ::nearby::analytics::EventLogger* event_logger) {
   if (nearby_sharing_service_ != nullptr) {
     return nullptr;
   }
 
   context_ =
       std::make_unique<ContextImpl>(sharing_platform);
-  event_logger_ = std::make_unique<NearbySharingEventLogger>(
-      sharing_platform.GetPreferenceManager(),
-      std::move(event_logger));
-  decoder_ = std::make_unique<NearbySharingDecoderImpl>();
-  nearby_connections_manager_ =
+  std::unique_ptr<TaskRunner> service_thread =
+      context_->CreateSequencedTaskRunner();
+  auto nearby_connections_manager =
       NearbyConnectionsManagerFactory::CreateConnectionsManager(
-          link_type, context_.get(), sharing_platform.GetDeviceInfo(),
-          event_logger_.get());
+          service_thread.get(), context_.get(),
+          sharing_platform.GetDeviceInfo(), event_logger);
 
   nearby_sharing_service_ = std::make_unique<NearbySharingServiceImpl>(
-      context_.get(), sharing_platform, decoder_.get(),
-      std::move(nearby_connections_manager_), event_logger_.get());
+      std::move(service_thread), context_.get(), sharing_platform,
+      std::move(nearby_connections_manager), analytics_recorder);
 
   return nearby_sharing_service_.get();
 }
 
-}  // namespace sharing
-}  // namespace nearby
+}  // namespace nearby::sharing

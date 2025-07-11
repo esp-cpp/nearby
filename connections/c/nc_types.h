@@ -15,11 +15,9 @@
 #ifndef THIRD_PARTY_NEARBY_CONNECTIONS_C_NC_TYPES_H_
 #define THIRD_PARTY_NEARBY_CONNECTIONS_C_NC_TYPES_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#include <cstddef>
-#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,9 +27,13 @@ typedef void* NC_INSTANCE;
 
 typedef int64_t NC_PAYLOAD_ID;
 
+typedef void* CALLER_CONTEXT;
+
+typedef void* READER_CONTEXT;
+
 // NC_DATA is used to define a byte array. Its last byte is not zero.
 typedef struct NC_DATA {
-  int64_t size;
+  uint64_t size;
   char* data;
 } NC_DATA, *PNC_DATA;
 
@@ -49,7 +51,9 @@ typedef enum NC_MEDIUM {
   NC_MEDIUM_WEB_RTC = 9,
   NC_MEDIUM_BLE_L2CAP = 10,
   NC_MEDIUM_USB = 11,
-  NC_MEDIUM_MAX = 12
+  NC_MEDIUM_WEB_RTC_NON_CELLULAR = 12,
+  NC_MEDIUM_AWDL = 13,
+  NC_MEDIUM_MAX = 14
 } NC_MEDIUM;
 
 typedef enum NC_CONNECTION_TYPE {
@@ -104,8 +108,8 @@ typedef enum NC_STATUS {
 typedef enum NC_PAYLOAD_TYPE {
   NC_PAYLOAD_TYPE_UNKNOWN = 0,
   NC_PAYLOAD_TYPE_BYTES = 1,
-  NC_PAYLOAD_TYPE_STREAM = 2,
-  NC_PAYLOAD_TYPE_FILE = 3
+  NC_PAYLOAD_TYPE_FILE = 2,
+  NC_PAYLOAD_TYPE_STREAM = 3
 } NC_PAYLOAD_TYPE;
 
 typedef enum NC_PAYLOAD_DIRECTION {
@@ -152,50 +156,55 @@ typedef struct NC_ADVERTISING_OPTIONS {
 
 typedef struct NC_CONNECTION_OPTIONS {
   NC_COMMON_OPTIONS common_options;
-  bool auto_upgrade_bandwidth = true;
+  bool auto_upgrade_bandwidth;
   bool enforce_topology_constraints;
   bool low_power;
-  bool is_out_of_band_connection = false;
+  bool is_out_of_band_connection;
   NC_DATA remote_bluetooth_mac_address;
   NC_DATA fast_advertisement_service_uuid;
-  int keep_alive_interval_millis = 0;
-  int keep_alive_timeout_millis = 0;
+  int keep_alive_interval_millis;
+  int keep_alive_timeout_millis;
 } NC_CONNECTION_OPTIONS, *PNC_CONNECTION_OPTIONS;
 
 typedef struct NC_DISCOVERY_OPTIONS {
   NC_COMMON_OPTIONS common_options;
-  bool auto_upgrade_bandwidth = true;
+  bool auto_upgrade_bandwidth;
   bool enforce_topology_constraints;
 
   // Whether this is intended to be used in conjunction with InjectEndpoint().
-  bool is_out_of_band_connection = false;
+  bool is_out_of_band_connection;
   NC_DATA fast_advertisement_service_uuid;
+  bool low_power;
 } NC_DISCOVERY_OPTIONS, *PNC_DISCOVERY_OPTIONS;
 
 typedef struct NC_CONNECTION_RESPONSE_INFO {
   NC_DATA remote_endpoint_info;
   NC_DATA authentication_token;
   NC_DATA raw_authentication_token;
-  bool is_incoming_connection = false;
-  bool is_connection_verified = false;
+  bool is_incoming_connection;
+  bool is_connection_verified;
 } NC_CONNECTION_RESPONSE_INFO, *PNC_CONNECTION_RESPONSE_INFO;
 
 // Defines callbacks in Nearby Connections.
 
-typedef void (*NcCallbackResult)(NC_STATUS status);
+typedef void (*NcCallbackResult)(NC_STATUS status, CALLER_CONTEXT context);
 
 typedef void (*NcCallbackConnectionInitiated)(
     NC_INSTANCE instance, int endpoint_id,
-    const NC_CONNECTION_RESPONSE_INFO& info);
+    const NC_CONNECTION_RESPONSE_INFO* info, CALLER_CONTEXT context);
 typedef void (*NcCallbackConnectionAccepted)(NC_INSTANCE instance,
-                                             int endpoint_id);
+                                             int endpoint_id,
+                                             CALLER_CONTEXT context);
 typedef void (*NcCallbackConnectionRejected)(NC_INSTANCE instance,
-                                             int endpoint_id, NC_STATUS status);
+                                             int endpoint_id, NC_STATUS status,
+                                             CALLER_CONTEXT context);
 typedef void (*NcCallbackConnectionDisconnected)(NC_INSTANCE instance,
-                                                 int endpoint_id);
+                                                 int endpoint_id,
+                                                 CALLER_CONTEXT context);
 typedef void (*NcCallbackConnectionBandwidthChanged)(NC_INSTANCE instance,
                                                      int endpoint_id,
-                                                     NC_MEDIUM medium);
+                                                     NC_MEDIUM medium,
+                                                     CALLER_CONTEXT context);
 
 typedef struct NC_CONNECTION_REQUEST_INFO {
   NC_DATA endpoint_info;
@@ -208,12 +217,15 @@ typedef struct NC_CONNECTION_REQUEST_INFO {
 
 typedef void (*NcCallbackDiscoveryEndpointFound)(NC_INSTANCE instance,
                                                  int endpoint_id,
-                                                 const NC_DATA& endpoint_info,
-                                                 const NC_DATA& service_id);
+                                                 const NC_DATA* endpoint_info,
+                                                 const NC_DATA* service_id,
+                                                 CALLER_CONTEXT context);
 typedef void (*NcCallbackDiscoveryEndpointLost)(NC_INSTANCE instance,
-                                                int endpoint_id);
+                                                int endpoint_id,
+                                                CALLER_CONTEXT context);
 typedef void (*NcCallbackDiscoveryEndpointDistanceChanged)(
-    NC_INSTANCE instance, int endpoint_id, NC_DISTANCE_INFO info);
+    NC_INSTANCE instance, int endpoint_id, NC_DISTANCE_INFO info,
+    CALLER_CONTEXT context);
 
 typedef struct NC_DISCOVERY_LISTENER {
   NcCallbackDiscoveryEndpointFound endpoint_found_callback;
@@ -226,9 +238,11 @@ typedef struct NC_BYTES_PAYLOAD {
 } NC_BYTES_PAYLOAD;
 
 typedef int (*NcCallbackStreamRead)(NC_INSTANCE stream, char* buffer,
-                                    int64_t size);
-typedef int (*NcCallbackStreamClose)(NC_INSTANCE stream);
-typedef int (*NcCallbackStreamSkip)(NC_INSTANCE stream, int64_t skip);
+                                    int64_t size, CALLER_CONTEXT context);
+typedef int (*NcCallbackStreamClose)(NC_INSTANCE stream,
+                                     CALLER_CONTEXT context);
+typedef int (*NcCallbackStreamSkip)(NC_INSTANCE stream, int64_t skip,
+                                    CALLER_CONTEXT context);
 
 typedef struct NC_STREAM_PAYLOAD {
   NC_INSTANCE stream;
@@ -271,10 +285,11 @@ typedef struct NC_PAYLOAD_PROGRESS_INFO {
 } NC_PAYLOAD_PROGRESS_INFO;
 
 typedef void (*NcCallbackPayloadReceived)(NC_INSTANCE instance, int endpoint_id,
-                                          const NC_PAYLOAD& payload);
+                                          const NC_PAYLOAD* payload,
+                                          CALLER_CONTEXT context);
 typedef void (*NcCallbackPayloadProgressUpdated)(
-    NC_INSTANCE instance, int endpoint_id,
-    const NC_PAYLOAD_PROGRESS_INFO& info);
+    NC_INSTANCE instance, int endpoint_id, const NC_PAYLOAD_PROGRESS_INFO* info,
+    CALLER_CONTEXT context);
 
 typedef struct NC_PAYLOAD_LISTENER {
   NcCallbackPayloadReceived received_callback;
@@ -301,6 +316,33 @@ typedef struct NC_OUT_OF_BAND_CONNECTION_METADATA {
   // Used for Bluetooth connections.
   NC_DATA remote_bluetooth_mac_address;
 } NC_OUT_OF_BAND_CONNECTION_METADATA, *PNC_OUT_OF_BAND_CONNECTION_METADATA;
+
+// Defines the minimal function interface for reading phenotype flags. Callbacks
+// will be implemented by the client.
+typedef struct NC_PHENOTYPE_FLAG_READER {
+  // Returns the value of the boolean flag with the given name. If not found,
+  // returns the default.
+  const bool (*get_bool_flag_value)(READER_CONTEXT context,
+                                    const NC_DATA* flag_name,
+                                    const bool default_value);
+  // Returns the value of the long flag with the given name. If not found,
+  // returns the default.
+  const int64_t (*get_long_flag_value)(READER_CONTEXT context,
+                                       const NC_DATA* flag_name,
+                                       const int64_t default_value);
+  // Returns the value of the double flag with the given name. If not found,
+  // returns the default.
+  const double (*get_double_flag_value)(READER_CONTEXT context,
+                                        const NC_DATA* flag_name,
+                                        const double default_value);
+  // Returns the value of the string flag with the given name. If not found,
+  // returns the default.
+  const NC_DATA (*get_string_flag_value)(READER_CONTEXT context,
+                                         const NC_DATA* flag_name,
+                                         const NC_DATA* default_value);
+  // Frees a string allocated when calling get_string_flag_value.
+  const void (*free_string_value)(const NC_DATA* value);
+} NC_PHENOTYPE_FLAG_READER;
 
 #ifdef __cplusplus
 }  // extern "C"

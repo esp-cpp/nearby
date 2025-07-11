@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <sys/stat.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -26,7 +27,6 @@
 #include "absl/base/no_destructor.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "connections/advertising_options.h"
@@ -42,11 +42,16 @@
 #include "connections/payload.h"
 #include "connections/status.h"
 #include "connections/strategy.h"
+#include "internal/flags/flag.h"
+#include "internal/flags/flag_reader.h"
 #include "internal/flags/nearby_flags.h"
 #include "internal/platform/bluetooth_utils.h"
 #include "internal/platform/byte_array.h"
 #include "internal/platform/file.h"
 #include "internal/platform/logging.h"
+#if TARGET_OS_IOS
+#include "internal/platform/implementation/apple/nearby_logger.h"
+#endif  // TARGET_OS_IOS
 
 namespace nearby::connections {
 class Core;
@@ -54,6 +59,63 @@ class ServiceController;
 class ServiceControllerRouter;
 class OfflineServiceController;
 }  // namespace nearby::connections
+
+namespace {
+class FlagReaderWrapper : public nearby::flags::FlagReader {
+ public:
+  explicit FlagReaderWrapper(READER_CONTEXT context,
+                             NC_PHENOTYPE_FLAG_READER phenotype_flag_reader)
+      : context_(context), phenotype_flag_reader_(phenotype_flag_reader) {}
+
+  bool GetBoolFlag(const nearby::flags::Flag<bool>& flag) override {
+    NC_DATA flag_name = NC_DATA{
+        .size = static_cast<uint64_t>(flag.name().size()),
+        .data = (char*)flag.name().data(),
+    };
+    return phenotype_flag_reader_.get_bool_flag_value(context_, &flag_name,
+                                                      flag.default_value());
+  }
+
+  int64_t GetInt64Flag(const nearby::flags::Flag<int64_t>& flag) override {
+    NC_DATA flag_name = NC_DATA{
+        .size = static_cast<uint64_t>(flag.name().size()),
+        .data = (char*)flag.name().data(),
+    };
+    return phenotype_flag_reader_.get_long_flag_value(context_, &flag_name,
+                                                      flag.default_value());
+  }
+
+  double GetDoubleFlag(const nearby::flags::Flag<double>& flag) override {
+    NC_DATA flag_name = NC_DATA{
+        .size = static_cast<uint64_t>(flag.name().size()),
+        .data = (char*)flag.name().data(),
+    };
+    return phenotype_flag_reader_.get_double_flag_value(context_, &flag_name,
+                                                        flag.default_value());
+  }
+
+  std::string GetStringFlag(
+      const nearby::flags::Flag<absl::string_view>& flag) override {
+    NC_DATA flag_name = NC_DATA{
+        .size = static_cast<uint64_t>(flag.name().size()),
+        .data = (char*)flag.name().data(),
+    };
+    NC_DATA default_value = NC_DATA{
+        .size = static_cast<uint64_t>(flag.default_value().size()),
+        .data = (char*)flag.default_value().data(),
+    };
+    NC_DATA flag_value = phenotype_flag_reader_.get_string_flag_value(
+        context_, &flag_name, &default_value);
+    std::string ret = std::string(flag_value.data, flag_value.size);
+    phenotype_flag_reader_.free_string_value(&flag_value);
+    return ret;
+  }
+
+ private:
+  READER_CONTEXT context_;
+  NC_PHENOTYPE_FLAG_READER phenotype_flag_reader_;
+};
+}  // namespace
 
 typedef struct NcContext {
   ::nearby::connections::ServiceControllerRouter* router = nullptr;
@@ -99,27 +161,28 @@ NcContext* GetContext(NC_INSTANCE instance) {
 
 ::nearby::connections::ConnectionRequestInfo GetCppConnectionRequestInfo(
     NC_INSTANCE instance,
-    const NC_CONNECTION_REQUEST_INFO& connection_request_info) {
+    const NC_CONNECTION_REQUEST_INFO& connection_request_info,
+    CALLER_CONTEXT context) {
   ::nearby::connections::ConnectionRequestInfo cpp_connection_request_info;
   cpp_connection_request_info.endpoint_info =
       nearby::ByteArray(connection_request_info.endpoint_info.data,
                         connection_request_info.endpoint_info.size);
   ::nearby::connections::ConnectionListener cpp_connection_listener;
   cpp_connection_listener.accepted_cb = [=](const std::string& endpoint_id) {
-    connection_request_info.accepted_callback(instance,
-                                              convertStringToInt(endpoint_id));
+    connection_request_info.accepted_callback(
+        instance, convertStringToInt(endpoint_id), context);
   };
   cpp_connection_listener.bandwidth_changed_cb =
       [=](const std::string& endpoint_id,
           ::nearby::connections::Medium medium) {
         connection_request_info.bandwidth_changed_callback(
             instance, convertStringToInt(endpoint_id),
-            static_cast<NC_MEDIUM>(medium));
+            static_cast<NC_MEDIUM>(medium), context);
       };
   cpp_connection_listener.disconnected_cb =
       [=](const std::string& endpoint_id) {
         connection_request_info.disconnected_callback(
-            instance, convertStringToInt(endpoint_id));
+            instance, convertStringToInt(endpoint_id), context);
       };
   cpp_connection_listener.initiated_cb =
       [=](const std::string& endpoint_id,
@@ -144,7 +207,7 @@ NcContext* GetContext(NC_INSTANCE instance) {
 
         connection_request_info.initiated_callback(
             instance, convertStringToInt(endpoint_id),
-            connection_response_info);
+            &connection_response_info, context);
       };
 
   cpp_connection_listener.rejected_cb =
@@ -152,7 +215,7 @@ NcContext* GetContext(NC_INSTANCE instance) {
           ::nearby::connections::Status status) {
         connection_request_info.rejected_callback(
             instance, convertStringToInt(endpoint_id),
-            static_cast<NC_STATUS>(status.value));
+            static_cast<NC_STATUS>(status.value), context);
       };
 
   cpp_connection_request_info.listener = std::move(cpp_connection_listener);
@@ -161,6 +224,46 @@ NcContext* GetContext(NC_INSTANCE instance) {
 
 NC_INSTANCE NcCreateService() {
   NcContext nc_context;
+#if TARGET_OS_IOS
+  absl::SetGlobalVLogLevel(1);  // OS_LOG_TYPE_DEBUG
+  ::nearby::apple::EnableOsLog("com.google.nearby.connections");
+#endif  // TARGET_OS_IOS
+
+#if defined(NC_IOS_SDK)
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableBleV2,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableDct,
+      false);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableDynamicRoleSwitch,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableBleL2cap,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableGattClientDisconnection,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableAwdl,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kEnableStopBleScanningOnWifiUpgrade,
+      true);
+  nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
+      ::nearby::connections::config_package_nearby::nearby_connections_feature::
+          kUseStableEndpointId,
+      true);
+#endif
+
   nc_context.router = new ::nearby::connections::ServiceControllerRouter();
   nc_context.core = new ::nearby::connections::Core(nc_context.router);
 
@@ -186,265 +289,282 @@ void NcCloseService(NC_INSTANCE instance) {
 }
 
 void NcStartAdvertising(
-    NC_INSTANCE instance, const NC_DATA& service_id,
-    const NC_ADVERTISING_OPTIONS& advertising_options,
-    const NC_CONNECTION_REQUEST_INFO& connection_request_info,
-    NcCallbackResult result_callback) {
+    NC_INSTANCE instance, const NC_DATA* service_id,
+    const NC_ADVERTISING_OPTIONS* advertising_options,
+    const NC_CONNECTION_REQUEST_INFO* connection_request_info,
+    NcCallbackResult result_callback, CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   ::nearby::connections::ConnectionRequestInfo cpp_connection_request_info =
-      GetCppConnectionRequestInfo(instance, connection_request_info);
+      GetCppConnectionRequestInfo(instance, *connection_request_info, context);
 
   ::nearby::connections::AdvertisingOptions cpp_advertising_options;
   cpp_advertising_options.allowed.ble =
-      advertising_options.common_options.allowed_mediums[NC_MEDIUM_BLE];
+      advertising_options->common_options.allowed_mediums[NC_MEDIUM_BLE];
   cpp_advertising_options.allowed.bluetooth =
-      advertising_options.common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
+      advertising_options->common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
   cpp_advertising_options.allowed.wifi_lan =
-      advertising_options.common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
+      advertising_options->common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
   cpp_advertising_options.allowed.wifi_direct =
-      advertising_options.common_options.allowed_mediums[NC_MEDIUM_WIFI_DIRECT];
+      advertising_options->common_options
+          .allowed_mediums[NC_MEDIUM_WIFI_DIRECT];
   cpp_advertising_options.allowed.wifi_hotspot =
-      advertising_options.common_options
+      advertising_options->common_options
           .allowed_mediums[NC_MEDIUM_WIFI_HOTSPOT];
   cpp_advertising_options.allowed.web_rtc =
-      advertising_options.common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
+      advertising_options->common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
   cpp_advertising_options.enable_bluetooth_listening =
-      advertising_options.enable_bluetooth_listening;
+      advertising_options->enable_bluetooth_listening;
   cpp_advertising_options.enable_webrtc_listening =
-      advertising_options.enable_webrtc_listening;
+      advertising_options->enable_webrtc_listening;
   cpp_advertising_options.auto_upgrade_bandwidth =
-      advertising_options.auto_upgrade_bandwidth;
+      advertising_options->auto_upgrade_bandwidth;
   cpp_advertising_options.enforce_topology_constraints =
-      advertising_options.enforce_topology_constraints;
-  if (advertising_options.fast_advertisement_service_uuid.size > 0) {
+      advertising_options->enforce_topology_constraints;
+  if (advertising_options->fast_advertisement_service_uuid.size > 0) {
     cpp_advertising_options.fast_advertisement_service_uuid =
-        std::string(advertising_options.fast_advertisement_service_uuid.data,
-                    advertising_options.fast_advertisement_service_uuid.size);
+        std::string(advertising_options->fast_advertisement_service_uuid.data,
+                    advertising_options->fast_advertisement_service_uuid.size);
   }
+  cpp_advertising_options.allowed.awdl =
+      advertising_options->common_options.allowed_mediums[NC_MEDIUM_AWDL];
 
   cpp_advertising_options.is_out_of_band_connection =
-      advertising_options.is_out_of_band_connection;
-  cpp_advertising_options.low_power = advertising_options.low_power;
+      advertising_options->is_out_of_band_connection;
+  cpp_advertising_options.low_power = advertising_options->low_power;
 
-  if (advertising_options.common_options.strategy.type ==
+  if (advertising_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_NONE) {
     cpp_advertising_options.strategy = ::nearby::connections::Strategy::kNone;
   }
-  if (advertising_options.common_options.strategy.type ==
+  if (advertising_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_CLUSTER)
     cpp_advertising_options.strategy =
         ::nearby::connections::Strategy::kP2pCluster;
-  if (advertising_options.common_options.strategy.type ==
+  if (advertising_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_POINT_TO_POINT)
     cpp_advertising_options.strategy =
         ::nearby::connections::Strategy::kP2pPointToPoint;
-  if (advertising_options.common_options.strategy.type ==
+  if (advertising_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_STAR)
     cpp_advertising_options.strategy =
         ::nearby::connections::Strategy::kP2pStar;
 
   nc_context->core->StartAdvertising(
-      std::string(service_id.data, service_id.size),
+      std::string(service_id->data, service_id->size),
       std::move(cpp_advertising_options),
       std::move(cpp_connection_request_info),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
-void NcStopAdvertising(NC_INSTANCE instance, NcCallbackResult result_callback) {
+void NcStopAdvertising(NC_INSTANCE instance, NcCallbackResult result_callback,
+                       CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->StopAdvertising([=](::nearby::connections::Status status) {
-    result_callback(static_cast<NC_STATUS>(status.value));
+    result_callback(static_cast<NC_STATUS>(status.value), context);
   });
 }
 
-void NcStartDiscovery(NC_INSTANCE instance, const NC_DATA& service_id,
-                      const NC_DISCOVERY_OPTIONS& discovery_options,
-                      const NC_DISCOVERY_LISTENER& discovery_listener,
-                      NcCallbackResult result_callback) {
+void NcStartDiscovery(NC_INSTANCE instance, const NC_DATA* service_id,
+                      const NC_DISCOVERY_OPTIONS* discovery_options,
+                      const NC_DISCOVERY_LISTENER* discovery_listener,
+                      NcCallbackResult result_callback, void* context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   ::nearby::connections::DiscoveryOptions cpp_discovery_options;
 
-  if (discovery_options.common_options.strategy.type == NC_STRATEGY_TYPE_NONE)
+  if (discovery_options->common_options.strategy.type == NC_STRATEGY_TYPE_NONE)
     cpp_discovery_options.strategy = ::nearby::connections::Strategy::kNone;
-  if (discovery_options.common_options.strategy.type ==
+  if (discovery_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_CLUSTER)
     cpp_discovery_options.strategy =
         ::nearby::connections::Strategy::kP2pCluster;
-  if (discovery_options.common_options.strategy.type ==
+  if (discovery_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_POINT_TO_POINT)
     cpp_discovery_options.strategy =
         ::nearby::connections::Strategy::kP2pPointToPoint;
-  if (discovery_options.common_options.strategy.type ==
+  if (discovery_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_STAR)
     cpp_discovery_options.strategy = ::nearby::connections::Strategy::kP2pStar;
   cpp_discovery_options.auto_upgrade_bandwidth =
-      discovery_options.auto_upgrade_bandwidth;
+      discovery_options->auto_upgrade_bandwidth;
   cpp_discovery_options.enforce_topology_constraints =
-      discovery_options.enforce_topology_constraints;
+      discovery_options->enforce_topology_constraints;
   cpp_discovery_options.is_out_of_band_connection =
-      discovery_options.is_out_of_band_connection;
-  if (discovery_options.fast_advertisement_service_uuid.size > 0) {
+      discovery_options->is_out_of_band_connection;
+  if (discovery_options->fast_advertisement_service_uuid.size > 0) {
     cpp_discovery_options.fast_advertisement_service_uuid =
-        std::string(discovery_options.fast_advertisement_service_uuid.data,
-                    discovery_options.fast_advertisement_service_uuid.size);
+        std::string(discovery_options->fast_advertisement_service_uuid.data,
+                    discovery_options->fast_advertisement_service_uuid.size);
   }
+  cpp_discovery_options.low_power = discovery_options->low_power;
   cpp_discovery_options.allowed.bluetooth =
-      discovery_options.common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
   cpp_discovery_options.allowed.ble =
-      discovery_options.common_options.allowed_mediums[NC_MEDIUM_BLE];
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_BLE];
   cpp_discovery_options.allowed.wifi_lan =
-      discovery_options.common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
   cpp_discovery_options.allowed.wifi_hotspot =
-      discovery_options.common_options.allowed_mediums[NC_MEDIUM_WIFI_HOTSPOT];
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_WIFI_HOTSPOT];
   cpp_discovery_options.allowed.web_rtc =
-      discovery_options.common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
+  cpp_discovery_options.allowed.awdl =
+      discovery_options->common_options.allowed_mediums[NC_MEDIUM_AWDL];
 
+  NC_DISCOVERY_LISTENER discovery_listener_copy = *discovery_listener;
   ::nearby::connections::DiscoveryListener listener;
   listener.endpoint_distance_changed_cb =
       [=](const std::string& endpoint_id,
           ::nearby::connections::DistanceInfo info) {
-        discovery_listener.endpoint_distance_changed_callback(
+        discovery_listener_copy.endpoint_distance_changed_callback(
             instance, convertStringToInt(endpoint_id),
-            static_cast<NC_DISTANCE_INFO>(info));
+            static_cast<NC_DISTANCE_INFO>(info), context);
       };
   listener.endpoint_found_cb = [=](const std::string& endpoint_id,
                                    const nearby::ByteArray& endpoint_info,
                                    const std::string& service_id) {
-    discovery_listener.endpoint_found_callback(
-        instance, convertStringToInt(endpoint_id),
-        NC_DATA{.size = static_cast<int64_t>(endpoint_info.size()),
-                .data = (char*)endpoint_info.data()},
-        NC_DATA{.size = static_cast<int64_t>(service_id.size()),
-                .data = (char*)service_id.data()});
+    NC_DATA endpoint_info_data = {
+        .size = static_cast<uint64_t>(endpoint_info.size()),
+        .data = (char*)endpoint_info.data()};
+    NC_DATA service_id_data = {.size = static_cast<uint64_t>(service_id.size()),
+                               .data = (char*)service_id.data()};
+    discovery_listener_copy.endpoint_found_callback(
+        instance, convertStringToInt(endpoint_id), &endpoint_info_data,
+        &service_id_data, context);
   };
 
   listener.endpoint_lost_cb = [=](const std::string& endpoint_id) {
-    discovery_listener.endpoint_lost_callback(instance,
-                                              convertStringToInt(endpoint_id));
+    discovery_listener_copy.endpoint_lost_callback(
+        instance, convertStringToInt(endpoint_id), context);
   };
-
   nc_context->core->StartDiscovery(
-      std::string(service_id.data, service_id.size),
+      std::string(service_id->data, service_id->size),
       std::move(cpp_discovery_options), std::move(listener),
-      [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+      [result_callback = std::move(result_callback),
+       context](::nearby::connections::Status status) {
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
-void NcStopDiscovery(NC_INSTANCE instance, NcCallbackResult result_callback) {
+void NcStopDiscovery(NC_INSTANCE instance, NcCallbackResult result_callback,
+                     CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->StopDiscovery([=](::nearby::connections::Status status) {
-    result_callback(static_cast<NC_STATUS>(status.value));
+    result_callback(static_cast<NC_STATUS>(status.value), context);
   });
 }
 
-void NcInjectEndpoint(NC_INSTANCE instance, const NC_DATA& service_id,
-                      const NC_OUT_OF_BAND_CONNECTION_METADATA& metadata,
-                      NcCallbackResult result_callback) {
+void NcInjectEndpoint(NC_INSTANCE instance, const NC_DATA* service_id,
+                      const NC_OUT_OF_BAND_CONNECTION_METADATA* metadata,
+                      NcCallbackResult result_callback,
+                      CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   ::nearby::connections::OutOfBandConnectionMetadata
       cpp_out_of_band_connection_metadata;
-  cpp_out_of_band_connection_metadata.endpoint_id = metadata.endpoint_id;
+  cpp_out_of_band_connection_metadata.endpoint_id = metadata->endpoint_id;
   cpp_out_of_band_connection_metadata.endpoint_info = {
-      metadata.endpoint_info.data,
-      static_cast<size_t>(metadata.endpoint_info.size)};
+      metadata->endpoint_info.data,
+      static_cast<size_t>(metadata->endpoint_info.size)};
   cpp_out_of_band_connection_metadata.medium =
-      static_cast<::nearby::connections::Medium>(metadata.medium);
+      static_cast<::nearby::connections::Medium>(metadata->medium);
   cpp_out_of_band_connection_metadata.remote_bluetooth_mac_address = {
-      metadata.remote_bluetooth_mac_address.data,
-      static_cast<size_t>(metadata.remote_bluetooth_mac_address.size)};
+      metadata->remote_bluetooth_mac_address.data,
+      static_cast<size_t>(metadata->remote_bluetooth_mac_address.size)};
 
   nc_context->core->InjectEndpoint(
-      std::string(service_id.data, service_id.size),
+      std::string(service_id->data, service_id->size),
       cpp_out_of_band_connection_metadata,
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcRequestConnection(
     NC_INSTANCE instance, int endpoint_id,
-    const NC_CONNECTION_REQUEST_INFO& connection_request_info,
-    const NC_CONNECTION_OPTIONS& connection_options,
-    NcCallbackResult result_callback) {
+    const NC_CONNECTION_REQUEST_INFO* connection_request_info,
+    const NC_CONNECTION_OPTIONS* connection_options,
+    NcCallbackResult result_callback, CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   ::nearby::connections::ConnectionRequestInfo cpp_connection_request_info =
-      GetCppConnectionRequestInfo(instance, connection_request_info);
+      GetCppConnectionRequestInfo(instance, *connection_request_info, context);
 
   ::nearby::connections::ConnectionOptions cpp_connection_options;
+  cpp_connection_options.allowed.awdl =
+      connection_options->common_options.allowed_mediums[NC_MEDIUM_AWDL];
   cpp_connection_options.allowed.ble =
-      connection_options.common_options.allowed_mediums[NC_MEDIUM_BLE];
+      connection_options->common_options.allowed_mediums[NC_MEDIUM_BLE];
   cpp_connection_options.allowed.bluetooth =
-      connection_options.common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
+      connection_options->common_options.allowed_mediums[NC_MEDIUM_BLUETOOTH];
   cpp_connection_options.allowed.web_rtc =
-      connection_options.common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
+      connection_options->common_options.allowed_mediums[NC_MEDIUM_WEB_RTC];
   cpp_connection_options.allowed.wifi_lan =
-      connection_options.common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
+      connection_options->common_options.allowed_mediums[NC_MEDIUM_WIFI_LAN];
+  cpp_connection_options.allowed.wifi_hotspot =
+      connection_options->common_options
+          .allowed_mediums[NC_MEDIUM_WIFI_HOTSPOT];
   cpp_connection_options.auto_upgrade_bandwidth =
-      connection_options.auto_upgrade_bandwidth;
+      connection_options->auto_upgrade_bandwidth;
   cpp_connection_options.enforce_topology_constraints =
-      connection_options.enforce_topology_constraints;
-  if (connection_options.fast_advertisement_service_uuid.size > 0) {
+      connection_options->enforce_topology_constraints;
+  if (connection_options->fast_advertisement_service_uuid.size > 0) {
     cpp_connection_options.fast_advertisement_service_uuid =
-        std::string(connection_options.fast_advertisement_service_uuid.data,
-                    connection_options.fast_advertisement_service_uuid.size);
+        std::string(connection_options->fast_advertisement_service_uuid.data,
+                    connection_options->fast_advertisement_service_uuid.size);
   }
   cpp_connection_options.is_out_of_band_connection =
-      connection_options.is_out_of_band_connection;
+      connection_options->is_out_of_band_connection;
   cpp_connection_options.keep_alive_interval_millis =
-      connection_options.keep_alive_interval_millis;
+      connection_options->keep_alive_interval_millis;
   cpp_connection_options.keep_alive_timeout_millis =
-      connection_options.keep_alive_timeout_millis;
-  cpp_connection_options.low_power = connection_options.low_power;
-  if (connection_options.remote_bluetooth_mac_address.size > 0) {
+      connection_options->keep_alive_timeout_millis;
+  cpp_connection_options.low_power = connection_options->low_power;
+  if (connection_options->remote_bluetooth_mac_address.size > 0) {
     cpp_connection_options.remote_bluetooth_mac_address =
         nearby::BluetoothUtils::FromString(
-            std::string(connection_options.remote_bluetooth_mac_address.data,
-                        connection_options.remote_bluetooth_mac_address.size));
+            std::string(connection_options->remote_bluetooth_mac_address.data,
+                        connection_options->remote_bluetooth_mac_address.size));
   }
-  if (connection_options.common_options.strategy.type == NC_STRATEGY_TYPE_NONE)
+  if (connection_options->common_options.strategy.type == NC_STRATEGY_TYPE_NONE)
     cpp_connection_options.strategy = ::nearby::connections::Strategy::kNone;
-  if (connection_options.common_options.strategy.type ==
+  if (connection_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_CLUSTER)
     cpp_connection_options.strategy =
         ::nearby::connections::Strategy::kP2pCluster;
-  if (connection_options.common_options.strategy.type ==
+  if (connection_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_POINT_TO_POINT)
     cpp_connection_options.strategy =
         ::nearby::connections::Strategy::kP2pPointToPoint;
-  if (connection_options.common_options.strategy.type ==
+  if (connection_options->common_options.strategy.type ==
       NC_STRATEGY_TYPE_P2P_STAR)
     cpp_connection_options.strategy = ::nearby::connections::Strategy::kP2pStar;
 
@@ -452,16 +572,17 @@ void NcRequestConnection(
       convertIntToString(endpoint_id), std::move(cpp_connection_request_info),
       std::move(cpp_connection_options),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcAcceptConnection(NC_INSTANCE instance, int endpoint_id,
                         NC_PAYLOAD_LISTENER payload_listener,
-                        NcCallbackResult result_callback) {
+                        NcCallbackResult result_callback,
+                        CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
@@ -474,8 +595,9 @@ void NcAcceptConnection(NC_INSTANCE instance, int endpoint_id,
         nc_payload.direction = NC_PAYLOAD_DIRECTION_INCOMING;
         nc_payload.type = static_cast<NC_PAYLOAD_TYPE>(payload.GetType());
         if (nc_payload.type == NC_PAYLOAD_TYPE_BYTES) {
-          nearby::ByteArray bytes = payload.AsBytes();
-          nc_payload.content.bytes.content.data = bytes.data();
+          const nearby::ByteArray& bytes = payload.AsBytes();
+          nc_payload.content.bytes.content.data =
+              const_cast<char*>(bytes.data());
           nc_payload.content.bytes.content.size = bytes.size();
         } else if (nc_payload.type == NC_PAYLOAD_TYPE_FILE) {
           nc_payload.content.file.file_name =
@@ -488,7 +610,7 @@ void NcAcceptConnection(NC_INSTANCE instance, int endpoint_id,
         }
 
         payload_listener.received_callback(
-            instance, convertStringToInt(endpoint_id), nc_payload);
+            instance, convertStringToInt(endpoint_id), &nc_payload, context);
       };
 
   cpp_payload_listener.payload_progress_cb =
@@ -502,37 +624,38 @@ void NcAcceptConnection(NC_INSTANCE instance, int endpoint_id,
             static_cast<NC_PAYLOAD_PROGRESS_INFO_STATUS>(progress.status);
         payload_listener.progress_updated_callback(
             instance, convertStringToInt(endpoint_id),
-            nc_payload_progress_info);
+            &nc_payload_progress_info, context);
       };
 
   nc_context->core->AcceptConnection(
       convertIntToString(endpoint_id), std::move(cpp_payload_listener),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcRejectConnection(NC_INSTANCE instance, int endpoint_id,
-                        NcCallbackResult result_callback) {
+                        NcCallbackResult result_callback,
+                        CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->RejectConnection(
       convertIntToString(endpoint_id),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcSendPayload(NC_INSTANCE instance, size_t endpoint_ids_size,
-                   const int* endpoint_ids, const NC_PAYLOAD& payload,
-                   NcCallbackResult result_callback) {
+                   const int* endpoint_ids, const NC_PAYLOAD* payload,
+                   NcCallbackResult result_callback, CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
@@ -544,89 +667,91 @@ void NcSendPayload(NC_INSTANCE instance, size_t endpoint_ids_size,
   absl::Span<const std::string> endpoint_ids_span(endpoint_ids_vector.data(),
                                                   endpoint_ids_size);
   ::nearby::connections::Payload cpp_payload;
-  if (payload.type == NC_PAYLOAD_TYPE_BYTES) {
+  if (payload->type == NC_PAYLOAD_TYPE_BYTES) {
     cpp_payload = ::nearby::connections::Payload(
-        payload.id, nearby::ByteArray(payload.content.bytes.content.data,
-                                      payload.content.bytes.content.size));
-  } else if (payload.type == NC_PAYLOAD_TYPE_FILE) {
+        payload->id, nearby::ByteArray(payload->content.bytes.content.data,
+                                       payload->content.bytes.content.size));
+  } else if (payload->type == NC_PAYLOAD_TYPE_FILE) {
     // get file size
     std::string full_file_name = "";
-    if (payload.content.file.parent_folder == nullptr) {
-      full_file_name = payload.content.file.file_name;
+    if (payload->content.file.parent_folder == nullptr) {
+      full_file_name = payload->content.file.file_name;
     } else {
-      full_file_name = absl::StrCat(payload.content.file.parent_folder, "/",
-                                    payload.content.file.file_name);
+      full_file_name = absl::StrCat(payload->content.file.parent_folder, "/",
+                                    payload->content.file.file_name);
     }
 
     nearby::InputFile input_file(full_file_name,
                                  getFileSize(full_file_name.c_str()));
     cpp_payload =
-        ::nearby::connections::Payload(payload.id, std::move(input_file));
-  } else if (payload.type == NC_PAYLOAD_TYPE_STREAM) {
+        ::nearby::connections::Payload(payload->id, std::move(input_file));
+  } else if (payload->type == NC_PAYLOAD_TYPE_STREAM) {
     // TODO(guogang): support stream later.
   }
 
   nc_context->core->SendPayload(
       endpoint_ids_span, std::move(cpp_payload),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcCancelPayload(NC_INSTANCE instance, NC_PAYLOAD_ID payload_id,
-                     NcCallbackResult result_callback) {
+                     NcCallbackResult result_callback, CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->CancelPayload(
       payload_id, [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
 void NcDisconnectFromEndpoint(NC_INSTANCE instance, int endpoint_id,
-                              NcCallbackResult result_callback) {
+                              NcCallbackResult result_callback,
+                              CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->DisconnectFromEndpoint(
       convertIntToString(endpoint_id),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
-void NcStopAllEndpoints(NC_INSTANCE instance,
-                        NcCallbackResult result_callback) {
+void NcStopAllEndpoints(NC_INSTANCE instance, NcCallbackResult result_callback,
+                        CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->StopAllEndpoints([=](::nearby::connections::Status status) {
-    result_callback(static_cast<NC_STATUS>(status.value));
+    result_callback(static_cast<NC_STATUS>(status.value), context);
   });
 }
 
 void NcInitiateBandwidthUpgrade(NC_INSTANCE instance, int endpoint_id,
-                                NcCallbackResult result_callback) {
+                                NcCallbackResult result_callback,
+                                CALLER_CONTEXT context) {
   NcContext* nc_context = GetContext(instance);
   if (nc_context == nullptr) {
-    result_callback(NC_STATUS_ERROR);
+    result_callback(NC_STATUS_ERROR, context);
     return;
   }
 
   nc_context->core->InitiateBandwidthUpgrade(
       convertIntToString(endpoint_id),
       [=](::nearby::connections::Status status) {
-        result_callback(static_cast<NC_STATUS>(status.value));
+        result_callback(static_cast<NC_STATUS>(status.value), context);
       });
 }
 
@@ -641,10 +766,33 @@ int NcGetLocalEndpointId(NC_INSTANCE instance) {
 }
 
 void NcEnableBleV2(NC_INSTANCE instance, bool enable,
-                   NcCallbackResult result_callback) {
+                   NcCallbackResult result_callback, CALLER_CONTEXT context) {
   nearby::NearbyFlags::GetInstance().OverrideBoolFlagValue(
       ::nearby::connections::config_package_nearby::nearby_connections_feature::
           kEnableBleV2,
       enable);
-  result_callback(NC_STATUS_SUCCESS);
+  result_callback(NC_STATUS_SUCCESS, context);
+}
+
+void NcSetCustomSavePath(NC_INSTANCE instance, const NC_DATA* save_path,
+                         NcCallbackResult result_callback,
+                         CALLER_CONTEXT context) {
+  NcContext* nc_context = GetContext(instance);
+  if (nc_context == nullptr) {
+    result_callback(NC_STATUS_ERROR, context);
+    return;
+  }
+
+  nc_context->core->SetCustomSavePath(
+      std::string(save_path->data, save_path->size),
+      [=](::nearby::connections::Status status) {
+        result_callback(static_cast<NC_STATUS>(status.value), context);
+      });
+}
+
+void NcSetPhenotypeFlagReader(READER_CONTEXT context,
+                              NC_PHENOTYPE_FLAG_READER phenotype_flag_reader) {
+  static absl::NoDestructor<FlagReaderWrapper> kNearbyFlags(
+      context, phenotype_flag_reader);
+  nearby::NearbyFlags::GetInstance().SetFlagReader(*kNearbyFlags);
 }
