@@ -848,6 +848,11 @@ static nearby_platform_status SetNonDiscoverableAdvertisement() {
   length += nearby_fp_AppendTxPower(advertisement + length,
                                     sizeof(advertisement) - length,
                                     nearby_platform_GetTxLevel());
+  NEARBY_TRACE(INFO, "advertisement data: %s", nearby_utils_ArrayToString(advertisement, length));
+  // Called when NDA advertisement is prepared and ready to emit.
+  if (client_callbacks && client_callbacks->on_nondiscoverable_advertisement_ready) {
+    client_callbacks->on_nondiscoverable_advertisement_ready(advertisement, length);
+  }
   return nearby_platform_SetAdvertisement(advertisement, length,
                                           kNoLargerThan250ms);
 }
@@ -966,6 +971,10 @@ static nearby_platform_status OnAccountKeyWrite(uint64_t peer_address,
     return kNearbyStatusOK;
   }
   RunPostPairingSteps(peer_address, &key_info);
+  // Called to inform the app when a peer writes an Account Key.
+  if (client_callbacks && client_callbacks->on_account_key_written) {
+    client_callbacks->on_account_key_written(peer_address, decrypted_request);
+  }
   return kNearbyStatusOK;
 }
 
@@ -1070,7 +1079,7 @@ static void OnPaired(uint64_t peer_address) {
   else if (AddRetroactivePairingPeer(peer_address) == false) {
     NEARBY_TRACE(WARNING, "No more timer for retroactive pairing");
   }
-#endif /* NEARBY_FP_RETROACTIVE_AIRING */
+#endif /* NEARBY_FP_RETROACTIVE_PAIRING */
 }
 
 static void OnPairingFailed(uint64_t peer_address) {
@@ -2013,4 +2022,12 @@ nearby_platform_status nearby_fp_client_Init(
   RotateBleAddress();
 
   return status;
+}
+
+nearby_platform_status nearby_fp_client_Deinit(void) {
+  client_callbacks = NULL;
+
+  // TODO: Add internal teardown logic here (BLE/Bluetooth/SE/Persistence/etc.)
+
+  return kNearbyStatusOK;
 }
