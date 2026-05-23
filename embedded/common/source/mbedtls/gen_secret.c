@@ -31,6 +31,16 @@
 
 #define MBEDTLS_ALLOW_PRIVATE_ACCESS
 
+#if defined(__has_include)
+#if __has_include(<psa/crypto.h>)
+#define NEARBY_PLATFORM_USE_PSA_CRYPTO 1
+#endif
+#endif
+
+#if defined(NEARBY_PLATFORM_USE_PSA_CRYPTO)
+#include <psa/crypto.h>
+#include <string.h>
+#else
 #include <mbedtls/aes.h>
 #include <mbedtls/ecdh.h>
 #include <mbedtls/ecp.h>
@@ -40,11 +50,60 @@
 #if (MBEDTLS_VERSION_NUMBER >= 0x03000000)
 #include <mbedtls/compat-2.x.h>
 #endif
+#endif
 
 #include <nearby_platform_se.h>
 #include <stdlib.h>
 
 #ifndef NEARBY_PLATFORM_HAS_SE
+#if defined(NEARBY_PLATFORM_USE_PSA_CRYPTO)
+static nearby_platform_status nearby_platform_InitCrypto() {
+  return psa_crypto_init() == PSA_SUCCESS ? kNearbyStatusOK : kNearbyStatusError;
+}
+
+nearby_platform_status nearby_platform_GenSec256r1Secret(
+    const uint8_t remote_party_public_key[64], uint8_t shared_secret[32]) {
+  if (nearby_platform_InitCrypto() != kNearbyStatusOK) {
+    return kNearbyStatusError;
+  }
+
+  const uint8_t* pkp = nearby_platform_GetAntiSpoofingPrivateKey();
+  if (!pkp) {
+    return kNearbyStatusError;
+  }
+
+  nearby_platform_status platform_status = kNearbyStatusError;
+  psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+  psa_key_id_t key_id = 0;
+  size_t shared_secret_length = 0;
+  uint8_t peer_public_key[65] = {0x04};
+
+  memcpy(&peer_public_key[1], remote_party_public_key, 64);
+
+  psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+  psa_set_key_bits(&attributes, 256);
+  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_DERIVE);
+  psa_set_key_algorithm(&attributes, PSA_ALG_ECDH);
+
+  psa_status_t status = psa_import_key(&attributes, pkp, 32, &key_id);
+  psa_reset_key_attributes(&attributes);
+  if (status != PSA_SUCCESS) {
+    goto exit;
+  }
+
+  status = psa_raw_key_agreement(PSA_ALG_ECDH, key_id, peer_public_key, sizeof(peer_public_key),
+                                 shared_secret, 32, &shared_secret_length);
+  if (status == PSA_SUCCESS && shared_secret_length == 32) {
+    platform_status = kNearbyStatusOK;
+  }
+
+exit:
+  if (key_id != 0) {
+    psa_destroy_key(key_id);
+  }
+  return platform_status;
+}
+#else
 static int crypto_rand(void* const seed, uint8_t* const out,
                        size_t const size) {
   (void)seed;
@@ -105,4 +164,5 @@ exit:
 
   return status;
 }
+#endif
 #endif /* NEARBY_PLATFORM_HAS_SE */
