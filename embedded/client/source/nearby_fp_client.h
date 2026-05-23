@@ -28,8 +28,23 @@ extern "C" {
 #endif /* __cplusplus */
 
 typedef struct {
-  // Optional event callback
+  // Optional generic event handler for all Fast Pair events.
+  // Payload type depends on the event_type.
   void (*on_event)(nearby_event_Event* event);
+
+  // Called when a remote peer successfully writes an Account Key during pairing.
+  // The Account Key has already been decrypted by the GFPS layer.
+  // Parameters:
+  //   peer_addr - BLE address of the remote device
+  //   key       - 16-byte decrypted Account Key
+  void (*on_account_key_written)(uint64_t peer_addr, const uint8_t key[16]);
+
+  // Called when the GFPS layer finishes constructing a Non-Discoverable Advertisement (NDA).
+  // The application layer is responsible for sending the advertisement payload.
+  // Parameters:
+  //   adv_data - pointer to raw advertisement data
+  //   len      - length of the advertisement in bytes
+  void (*on_nondiscoverable_advertisement_ready)(const uint8_t* adv_data, size_t len);
 } nearby_fp_client_Callbacks;
 
 // Seeker information structure
@@ -72,6 +87,9 @@ nearby_platform_status nearby_fp_client_SetAdvertisement(int mode);
 // Initalizes Fast Pair provider. The |callbacks| are optional - can be NULL.
 nearby_platform_status nearby_fp_client_Init(
     const nearby_fp_client_Callbacks* callbacks);
+
+// Releases internal Fast Pair resources and resets callback bindings.
+nearby_platform_status nearby_fp_client_Deinit(void);
 
 #if NEARBY_FP_MESSAGE_STREAM
 // Serializes and sends |message| over Message Stream
